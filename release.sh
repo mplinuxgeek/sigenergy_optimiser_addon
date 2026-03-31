@@ -7,9 +7,14 @@ ADDON_CONFIG="sigenergy_optimiser/config.yaml"
 WORKFLOW_FILE=".github/workflows/build.yml"
 POLL_INTERVAL=5
 MAX_WAIT_SECONDS=3600
+COMMIT_MESSAGE=""
 
 github_repo() {
   git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##'
+}
+
+current_branch() {
+  git rev-parse --abbrev-ref HEAD
 }
 
 github_api() {
@@ -107,17 +112,21 @@ wait_for_release_run() {
   done
 }
 
+prompt_commit_message() {
+  local default_message=$1
+
+  if [ -r /dev/tty ]; then
+    read -e -r -p "Commit message [${default_message}]: " COMMIT_MESSAGE </dev/tty || true
+  fi
+
+  COMMIT_MESSAGE=${COMMIT_MESSAGE:-$default_message}
+}
+
 # ── Validate bump type ────────────────────────────────────────────────────────
 case "$BUMP" in
   major|minor|patch) ;;
   *) echo "Usage: $0 [major|minor|patch]" >&2; exit 1 ;;
 esac
-
-# ── Require clean working tree ────────────────────────────────────────────────
-if [ -n "$(git status --porcelain)" ]; then
-  echo "Error: working tree is dirty — commit or stash changes first." >&2
-  exit 1
-fi
 
 # ── Read current version from add-on config.yaml ─────────────────────────────
 CURRENT=$(grep '^version:' "$ADDON_CONFIG" | sed 's/version: *"\?//;s/"\?$//')
@@ -139,17 +148,32 @@ esac
 NEW="${MAJOR}.${MINOR}.${PATCH}"
 TAG="v${NEW}"
 REPO=$(github_repo)
+BRANCH=$(current_branch)
+
+if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+  echo "Error: tag ${TAG} already exists." >&2
+  exit 1
+fi
 
 echo "Bumping $CURRENT → $NEW ($BUMP)"
 
 # ── Update version in add-on config.yaml ─────────────────────────────────────
 sed -i "s/^version: .*/version: \"${NEW}\"/" "$ADDON_CONFIG"
 
-# ── Commit, tag, push ─────────────────────────────────────────────────────────
-git add "$ADDON_CONFIG"
-git commit -m "Release ${TAG}"
+# ── Stage and commit everything ───────────────────────────────────────────────
+git add -A
+
+if git diff --cached --quiet; then
+  echo "Error: nothing staged for commit." >&2
+  exit 1
+fi
+
+prompt_commit_message "Release ${TAG}"
+git commit -m "$COMMIT_MESSAGE"
+
+# ── Push branch, tag, push tag ────────────────────────────────────────────────
 git tag "$TAG"
-git push
+git push origin "$BRANCH"
 git push origin "$TAG"
 TAG_SHA=$(git rev-list -n 1 "$TAG")
 

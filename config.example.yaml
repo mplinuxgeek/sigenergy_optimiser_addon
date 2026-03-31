@@ -1,5 +1,5 @@
 home_assistant:
-  url: http://xxx.xxx.xxx.xxx:8123
+  url: http://127.0.0.1:8123
   token: YOUR_LONG_LIVED_ACCESS_TOKEN
 service:
   poll_seconds: 20
