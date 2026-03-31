@@ -1,13 +1,16 @@
 #!/bin/bash
-# Usage: ./release.sh [major|minor|patch]   (default: patch)
+# Usage: ./release.sh [major|minor|patch] [commit message...]
 set -euo pipefail
 
 BUMP=${1:-patch}
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+COMMIT_MESSAGE="${*:-}"
 ADDON_CONFIG="sigenergy_optimiser/config.yaml"
 WORKFLOW_FILE=".github/workflows/build.yml"
 POLL_INTERVAL=5
 MAX_WAIT_SECONDS=3600
-COMMIT_MESSAGE=""
 
 github_repo() {
   git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##'
@@ -142,7 +145,7 @@ prompt_commit_message() {
 # ── Validate bump type ────────────────────────────────────────────────────────
 case "$BUMP" in
   major|minor|patch) ;;
-  *) echo "Usage: $0 [major|minor|patch]" >&2; exit 1 ;;
+  *) echo "Usage: $0 [major|minor|patch] [commit message...]" >&2; exit 1 ;;
 esac
 
 # ── Read current version from add-on config.yaml ─────────────────────────────

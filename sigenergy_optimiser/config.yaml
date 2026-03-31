@@ -1,6 +1,6 @@
 name: "SigEnergy Optimiser"
 description: "Battery/solar optimiser for SigEnergy inverters with Amber Electric pricing. Provides a web UI on port 8000."
-version: "1.0.6"
+version: "1.0.7"
 slug: "sigenergy_optimiser"
 init: false
 homeassistant: "2023.1.0"
