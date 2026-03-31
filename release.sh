@@ -126,15 +126,7 @@ if [ -z "$CURRENT" ]; then
   exit 1
 fi
 
-MAJOR=$(echo "$CURRENT" | cut -d. -f1)martin@odin:~/dev/sigenergy_optimiser$ git add requirements.txt
-git commit -m "Use base uvicorn package for container builds"
-./release.sh
-[main 306e76c] Use base uvicorn package for container builds
- 1 file changed, 1 insertion(+), 1 deletion(-)
-Error: working tree is dirty — commit or stash changes first.
-martin@odin:~/dev/sigenergy_optimiser$ ./release.sh
-Error: working tree is dirty — commit or stash changes first.
-
+MAJOR=$(echo "$CURRENT" | cut -d. -f1)
 MINOR=$(echo "$CURRENT" | cut -d. -f2)
 PATCH=$(echo "$CURRENT" | cut -d. -f3)
 
