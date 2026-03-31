@@ -31,6 +31,11 @@ github_api() {
   fi
 }
 
+actions_url() {
+  local repo=$1
+  echo "https://github.com/${repo}/actions"
+}
+
 wait_for_release_run() {
   local repo=$1
   local tag=$2
@@ -50,7 +55,7 @@ wait_for_release_run() {
   start_ts=$(date +%s)
 
   while :; do
-    run_json=$(
+    if ! run_json=$(
       github_api "https://api.github.com/repos/${repo}/actions/workflows/$(basename "$workflow_file")/runs?event=push&per_page=20" |
         jq -c --arg sha "$tag_sha" --arg tag "$tag" '
           .workflow_runs
@@ -58,7 +63,13 @@ wait_for_release_run() {
           | sort_by(.created_at)
           | last // empty
         '
-    )
+    ); then
+      echo ""
+      echo "Warning: could not query GitHub Actions API to wait for ${tag}."
+      echo "Set GITHUB_TOKEN for private repos or to avoid API limits."
+      echo "Actions: $(actions_url "$repo")"
+      return 0
+    fi
 
     if [ -n "$run_json" ]; then
       run_id=$(printf '%s' "$run_json" | jq -r '.id')
@@ -78,7 +89,13 @@ wait_for_release_run() {
   done
 
   while :; do
-    run_json=$(github_api "https://api.github.com/repos/${repo}/actions/runs/${run_id}")
+    if ! run_json=$(github_api "https://api.github.com/repos/${repo}/actions/runs/${run_id}"); then
+      echo ""
+      echo "Warning: lost access while polling GitHub Actions for ${tag}."
+      echo "Set GITHUB_TOKEN for private repos or to avoid API limits."
+      echo "Actions: $(actions_url "$repo")"
+      return 0
+    fi
     status=$(printf '%s' "$run_json" | jq -r '.status')
     conclusion=$(printf '%s' "$run_json" | jq -r '.conclusion // ""')
     html_url=$(printf '%s' "$run_json" | jq -r '.html_url')
