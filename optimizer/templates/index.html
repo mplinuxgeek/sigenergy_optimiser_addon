@@ -873,7 +873,7 @@
     function handlePriceHover(ev) {
       if (!priceChartState) return;
       const svg = document.getElementById('price-chart');
-      const panel = document.querySelector('.price-panel');
+      const panel = svg ? svg.closest('.price-panel') : null;
       const tip = document.getElementById('price-tip');
       if (!svg || !panel || !tip) return;
 
