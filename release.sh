@@ -18,6 +18,11 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 # ── Read current version from add-on config.yaml ─────────────────────────────
+if ! git ls-files --error-unmatch "$ADDON_CONFIG" >/dev/null 2>&1; then
+  echo "Error: $ADDON_CONFIG is not tracked by git." >&2
+  exit 1
+fi
+
 CURRENT=$(grep '^version:' "$ADDON_CONFIG" | sed 's/version: *"\?//;s/"\?$//')
 if [ -z "$CURRENT" ]; then
   echo "Error: could not read version from $ADDON_CONFIG" >&2

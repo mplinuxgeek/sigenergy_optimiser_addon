@@ -1,4 +1,5 @@
-config.yaml
+/config.yaml
+.claude/
 optimizer_state.db
 *.pyc
 __pycache__/
