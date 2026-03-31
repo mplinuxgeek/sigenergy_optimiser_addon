@@ -1,0 +1,2 @@
+"""SigEnergy optimizer package."""
+

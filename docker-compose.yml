@@ -1,0 +1,13 @@
+services:
+  sigenergy-optimizer:
+    build: .
+    container_name: sigenergy-optimizer
+    restart: unless-stopped
+    environment:
+      TZ: Australia/Adelaide
+      LOG_LEVEL: INFO
+      CONFIG_PATH: /app/config.yaml
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
