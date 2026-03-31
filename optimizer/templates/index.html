@@ -942,8 +942,16 @@
       if (dotP) dotP.style.display = 'none';
     }
 
+    const APP_BASE = window.location.pathname.endsWith('/')
+      ? window.location.pathname
+      : `${window.location.pathname}/`;
+
+    function appPath(path) {
+      return `${APP_BASE}${String(path).replace(/^\/+/, '')}`;
+    }
+
     async function refreshPrices() {
-      const r = await fetch('/api/prices');
+      const r = await fetch(appPath('/api/prices'));
       const data = await r.json();
       drawPriceChart(data);
     }
@@ -1247,7 +1255,7 @@
     }
 
     async function refreshPower() {
-      const r = await fetch('/api/power');
+      const r = await fetch(appPath('/api/power'));
       const data = await r.json();
       drawPowerChart(data);
     }
@@ -1268,7 +1276,7 @@
       try {
         const passes = SIMULATION_PASSES;
         setSimButtonProgress(btn, 0.1, `Simulating 3 tunings x ${passes}...`);
-        const r = await fetch('/api/simulate', {
+        const r = await fetch(appPath('/api/simulate'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ passes }),
@@ -1300,7 +1308,7 @@
     }
 
     async function refreshStatus() {
-      const r = await fetch('/api/status');
+      const r = await fetch(appPath('/api/status'));
       const data = await r.json();
       const rt = data.runtime || {};
       const d = rt.decision || {};
@@ -1370,7 +1378,7 @@
     }
 
     async function refreshControls() {
-      const r = await fetch('/api/controls');
+      const r = await fetch(appPath('/api/controls'));
       const data = await r.json();
       const ess = data.ess || {};
 
@@ -1452,13 +1460,13 @@
     }
 
     async function refreshConfig() {
-      const r = await fetch('/api/config');
+      const r = await fetch(appPath('/api/config'));
       const data = await r.json();
       document.getElementById('config-json').textContent = JSON.stringify(data, null, 2);
     }
 
     async function refreshLogs() {
-      const r = await fetch('/api/logs');
+      const r = await fetch(appPath('/api/logs'));
       const data = await r.json();
       const lines = (data.logs || []).slice().reverse().map(l => `[${l.ts}] ${l.level} ${l.logger}: ${l.message}`);
       document.getElementById('logs-text').textContent = lines.join('\n');
@@ -1468,8 +1476,8 @@
       let today, history;
       try {
         const [rToday, rHistory] = await Promise.all([
-          fetch('/api/daily-earnings'),
-          fetch('/api/earnings-history?days=7'),
+          fetch(appPath('/api/daily-earnings')),
+          fetch(appPath('/api/earnings-history?days=7')),
         ]);
         today = await rToday.json();
         history = await rHistory.json();
@@ -1539,14 +1547,14 @@
       const previousMode = document.getElementById('sig-mode').dataset.actualMode || '';
       const mode = document.getElementById('sig-mode').value;
       setControlPending('sig-mode', mode);
-      const res = await fetch('/api/controls/mode', {
+      const res = await fetch(appPath('/api/controls/mode'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode }),
       });
       const data = await res.json();
       if (res.ok && mode === 'automated' && previousMode !== 'automated' && data?.runtime?.control_mode === 'automated') {
-        const cycleRes = await fetch('/api/force-cycle', { method: 'POST' });
+        const cycleRes = await fetch(appPath('/api/force-cycle'), { method: 'POST' });
         const cycleData = await cycleRes.json();
         document.getElementById('controls-status').textContent = cycleRes.ok
           ? 'SigEnergy mode set to automated and cycle started'
@@ -1558,7 +1566,7 @@
     }
 
     async function applyAlgorithmTuning(tuning) {
-      const res = await fetch('/api/controls/tuning', {
+      const res = await fetch(appPath('/api/controls/tuning'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tuning }),
@@ -1567,7 +1575,7 @@
       if (res.ok) {
         setAlgorithmTuningUi(tuning);
         if ((data.controls?.control_mode || '') === 'automated') {
-          const cycleRes = await fetch('/api/force-cycle', { method: 'POST' });
+          const cycleRes = await fetch(appPath('/api/force-cycle'), { method: 'POST' });
           const cycleData = await cycleRes.json();
           document.getElementById('controls-status').textContent = cycleRes.ok
             ? `Algorithm tuning set to ${tuning.replace('_', ' ')} and cycle started`
@@ -1595,7 +1603,7 @@
         payload.pv_max_power_limit = document.getElementById('pv-max').value;
       }
       try {
-        const res = await fetch('/api/controls/ess', {
+        const res = await fetch(appPath('/api/controls/ess'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -1628,7 +1636,7 @@
       btn.textContent = 'Importing…';
       statusEl.textContent = '';
       try {
-        const res = await fetch('/api/import-ha-history', { method: 'POST' });
+        const res = await fetch(appPath('/api/import-ha-history'), { method: 'POST' });
         const data = await res.json();
         if (res.ok && data.ok) {
           statusEl.textContent = `Imported ${data.rows_inserted} rows across ${data.dates.length} days (cleared ${data.rows_cleared} existing)`;
@@ -1645,7 +1653,7 @@
     });
 
     document.getElementById('force-cycle').addEventListener('click', async () => {
-      const res = await fetch('/api/force-cycle', { method: 'POST' });
+      const res = await fetch(appPath('/api/force-cycle'), { method: 'POST' });
       await refreshAll();
       if (!res.ok) document.getElementById('overview-status').textContent = 'Manual cycle failed';
     });
@@ -1677,7 +1685,7 @@
         import_threshold_high:   parseFloat(document.getElementById('thresh-imp-price-high').value) / 100,
         import_limit_high:       parseFloat(document.getElementById('thresh-imp-limit-high').value),
       };
-      const res = await fetch('/api/controls/thresholds', {
+      const res = await fetch(appPath('/api/controls/thresholds'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1692,7 +1700,7 @@
       const btn = document.getElementById('export-csv');
       if (btn) btn.disabled = true;
       try {
-        const [pricesResp, powerResp] = await Promise.all([fetch('/api/prices'), fetch('/api/power')]);
+        const [pricesResp, powerResp] = await Promise.all([fetch(appPath('/api/prices')), fetch(appPath('/api/power'))]);
         const prices = await pricesResp.json();
         const power = await powerResp.json();
 
@@ -1889,7 +1897,7 @@
     function connectWebSocket() {
       clearTimeout(_wsReconnectTimer);
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      _ws = new WebSocket(`${proto}//${location.host}/ws`);
+      _ws = new WebSocket(`${proto}//${location.host}${appPath('/ws')}`);
 
       _ws.onopen = () => {
         _stopFallbackPolling();
