@@ -30,11 +30,16 @@ class HAClient:
         self._token = token
         self._timeout = timeout
 
-        # Convert http://host:port to ws://host:port/api/websocket
+        # Convert:
+        # - http://host:port -> ws://host:port/api/websocket
+        # - http://supervisor/core -> ws://supervisor/core/websocket
         parsed = urlparse(self._http_url)
         ws_scheme = "wss" if parsed.scheme == "https" else "ws"
         ws_base_path = parsed.path.rstrip("/")
-        self._ws_url = f"{ws_scheme}://{parsed.netloc}{ws_base_path}/websocket"
+        if ws_base_path:
+            self._ws_url = f"{ws_scheme}://{parsed.netloc}{ws_base_path}/websocket"
+        else:
+            self._ws_url = f"{ws_scheme}://{parsed.netloc}/api/websocket"
 
         # REST session for service calls
         self._s = requests.Session()
