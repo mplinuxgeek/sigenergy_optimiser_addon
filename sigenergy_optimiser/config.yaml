@@ -23,4 +23,4 @@ options:
 schema:
   log_level: "list(trace|debug|info|notice|warning|error|fatal)"
 
-image: "ghcr.io/{owner}/{repo}"
+image: "ghcr.io/mplinuxgeek/sigenergy_optimiser_addon"
