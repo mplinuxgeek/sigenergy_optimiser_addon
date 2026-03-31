@@ -1,6 +1,6 @@
 home_assistant:
-  url: http://127.0.0.1:8123
-  token: YOUR_LONG_LIVED_ACCESS_TOKEN
+  url: ""
+  token: ""
 service:
   poll_seconds: 20
   notification_service: notify.home_users

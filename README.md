@@ -27,8 +27,9 @@ cp config.example.yaml config.yaml
 ```
 
 2. Edit `config.yaml`:
-- Set `home_assistant.url`
-- Set `home_assistant.token` (long-lived access token)
+- For local Docker/dev, set `home_assistant.url`
+- For local Docker/dev, set `home_assistant.token` (long-lived access token)
+- For the Home Assistant add-on, leave both blank and the add-on will use the Supervisor API automatically
 - Adjust entities/thresholds to match your setup
 
 3. Start container:

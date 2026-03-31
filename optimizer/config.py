@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any
 
@@ -216,9 +217,14 @@ class AppConfig:
             for k, v in (raw.get("profiles") or {}).items()
             if isinstance(v, dict)
         }
+        env_supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "")
+        raw_ha_url = str(ha.get("url", "")).rstrip("/")
+        raw_ha_token = str(ha.get("token", ""))
+        ha_url = raw_ha_url or ("http://supervisor/core" if env_supervisor_token else "")
+        ha_token = raw_ha_token or env_supervisor_token
         return AppConfig(
-            ha_url=str(ha.get("url", "")).rstrip("/"),
-            ha_token=str(ha.get("token", "")),
+            ha_url=ha_url,
+            ha_token=ha_token,
             entities=entities,
             thresholds=thresholds,
             service=service,
@@ -227,9 +233,9 @@ class AppConfig:
 
     def validate(self) -> None:
         if not self.ha_url:
-            raise ValueError("home_assistant.url is required")
+            raise ValueError("home_assistant.url is required unless running as a Home Assistant add-on")
         if not self.ha_token:
-            raise ValueError("home_assistant.token is required")
+            raise ValueError("home_assistant.token is required unless SUPERVISOR_TOKEN is available")
         if not self.ha_url.startswith("http"):
             raise ValueError("home_assistant.url must start with http/https")
         t = self.thresholds

@@ -33,7 +33,8 @@ class HAClient:
         # Convert http://host:port to ws://host:port/api/websocket
         parsed = urlparse(self._http_url)
         ws_scheme = "wss" if parsed.scheme == "https" else "ws"
-        self._ws_url = f"{ws_scheme}://{parsed.netloc}/api/websocket"
+        ws_base_path = parsed.path.rstrip("/")
+        self._ws_url = f"{ws_scheme}://{parsed.netloc}{ws_base_path}/websocket"
 
         # REST session for service calls
         self._s = requests.Session()

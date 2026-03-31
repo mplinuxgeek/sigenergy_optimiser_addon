@@ -4,6 +4,7 @@ version: "1.0.3"
 slug: "sigenergy_optimiser"
 init: false
 homeassistant: "2023.1.0"
+homeassistant_api: true
 
 arch:
   - aarch64
