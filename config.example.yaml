@@ -1,5 +1,5 @@
 home_assistant:
-  url: http://homeassistant.local:8123
+  url: http://xxx.xxx.xxx.xxx:8123
   token: YOUR_LONG_LIVED_ACCESS_TOKEN
 service:
   poll_seconds: 20
@@ -8,23 +8,19 @@ service:
   daily_summary_time: '23:55'
   notify_morning_summary: true
   morning_summary_time: 07:30
-  sigenergy_config_entry_id: ''
+  sigenergy_config_entry_id: '01K6455MZWEDS15Y2QTCBRB35D'
   enable_daily_autotune: true
   autotune_run_hour: 0
   autotune_target_net: 2.0
-  autotune_min_soc_hard_floor: 4.0
-  autotune_min_sunrise_soc: 8.0
+  autotune_min_soc_hard_floor: 2.5
+  autotune_min_sunrise_soc: 2.5
   autotune_max_candidates: 80
 entities:
-  manual_mode_select: input_select.sigenergy_mode
-  optimiser_automation: automation.sigenergy_solar_import_export_control
   ha_control_switch: switch.sigen_plant_remote_ems_controled_by_home_assistant
   ems_mode_select: select.sigen_plant_remote_ems_control_mode
   grid_export_limit: number.sigen_plant_grid_export_limitation
   grid_import_limit: number.sigen_plant_grid_import_limitation
   pv_max_power_limit: number.sigen_plant_pv_max_power_limit
-  ess_max_charging_limit: ''
-  ess_max_discharging_limit: ''
   battery_soc_sensor: sensor.sigen_plant_battery_state_of_charge
   battery_power_sensor: sensor.sigen_plant_battery_power
   pv_power_sensor: sensor.sigen_plant_pv_power
@@ -60,10 +56,14 @@ entities:
   reason_text: input_text.sigenergy_reason
   last_export_notification: input_text.sigenergy_last_export_notification
   last_import_notification: input_text.sigenergy_last_import_notification
+  manual_mode_select: input_select.sigenergy_mode
+  optimiser_automation: automation.sigenergy_solar_import_export_control
+  ess_max_charging_limit: number.sigen_plant_ess_max_charging_limit
+  ess_max_discharging_limit: number.sigen_plant_ess_max_discharging_limit
 thresholds:
-  export_threshold_low: 0.1
-  export_threshold_medium: 0.2
-  export_threshold_high: 1.0
+  export_threshold_low: 0.05
+  export_threshold_medium: 0.1
+  export_threshold_high: 0.25
   export_limit_low: 3.0
   export_limit_medium: 8.0
   export_limit_high: 25.0
@@ -72,16 +72,16 @@ thresholds:
   import_threshold_high: -0.3
   import_limit_low: 5.0
   import_limit_medium: 15.0
-  import_limit_high: 30.0
+  import_limit_high: 25.0
   max_price_threshold: 0.1
-  cap_total_import: 30.0
+  cap_total_import: 25.0
   pv_max_power_normal: 25.0
   min_grid_transfer_kw: 0.5
   min_change_threshold: 0.2
-  min_soc_floor: 15.0
-  sunrise_reserve_soc: 20.0
-  sunrise_buffer_percent: 5.0
-  sunrise_safety_factor: 1.2
+  min_soc_floor: 2.5
+  sunrise_reserve_soc: 2.5
+  sunrise_buffer_percent: 0.0
+  sunrise_safety_factor: 1.05
   night_reserve_soc: 15.0
   night_reserve_buffer: 5.0
   export_guard_relax_soc: 90.0
@@ -96,27 +96,84 @@ thresholds:
   auto_enable_ha_control: true
   off_setpoint_kw: 0.1
   fit_hysteresis_band: 0.01
-  soc_hysteresis_percent: 2.0
+  soc_hysteresis_percent: 0.25
   sunrise_export_relax_percent: 5.0
   cheap_import_price_threshold: 0.03
   reserve_protection_max_price: 0.08
   enable_charge_holdoff: true
   late_morning_hour: 11
-  morning_dump_enabled: false
+  morning_dump_enabled: true
   morning_dump_hours_before_sunrise: 1.5
+  morning_dump_min_feedin: 0.0
   afternoon_lookahead_hours: 6.0
   afternoon_lookahead_ratio: 3.0
-  ess_limit_value: 25.0
-  ess_limits_require_command_modes: true
-  force_mode_use_rated_limits: true
-  export_limit_value: 30.0
-  import_limit_value: 30.0
-  pv_max_power_value: 30.0
-  export_mode_option: Command Discharging (PV First)
-  import_mode_option: Command Charging (Grid First)
-  block_mode_option: Maximum Self Consumption
-  automated_option: Automated
-  manual_option: Manual
-  full_export_option: Force Full Export
-  full_import_option: Force Full Import
-  block_flow_option: Prevent Import & Export
+  midnight_reserve_soc: 75.0
+  export_limit_value: 3.0
+  import_limit_value: 3.0
+  pv_max_power_value: 3.0
+  force_mode_use_rated_limits: false
+
+# Per-profile threshold overrides. Values here are applied after the profile's
+# built-in logic runs, so they override the hardcoded profile defaults.
+# Only include keys you want to change — omitted keys use the profile's built-in default.
+profiles:
+  max_profits:
+    # SOC floors — profile math hardcodes these; override here to tune them.
+    min_soc_floor: 1.0
+    morning_dump_target_soc: 1.0
+    sunrise_reserve_soc: 1.0
+    night_reserve_soc: 5.0
+    midnight_reserve_soc: 50.0
+    # Full-speed morning dump — drain to floor as fast as possible.
+    morning_dump_rate_fraction: 1.0
+    morning_dump_hours_before_sunrise: 2.5
+    # Hold battery discharge until feedin reaches this fraction of the upcoming peak price.
+    # Higher = waits longer, closer to the actual peak. Range 0.0–1.0.
+    afternoon_lookahead_min_fraction: 0.97
+    # Forced spike export: fire full discharge when feedin hits this rate ($/kWh).
+    forced_export_spike_threshold: 1.00
+    # Forecast hold: hold battery at 100% when an upcoming price at or above this
+    # rate is detected in the forecast window.
+    forecast_hold_price_threshold: 0.50
+    forecast_hold_start_hour: 14
+    forecast_hold_end_hour: 22
+  balanced:
+    # SOC floors — profile math hardcodes these; override here to tune them.
+    min_soc_floor: 2.5
+    morning_dump_target_soc: 2.5
+    midnight_reserve_soc: 60.0
+    # Full-speed morning dump for balanced too.
+    morning_dump_rate_fraction: 1.0
+    morning_dump_hours_before_sunrise: 2.0
+    # sunrise_reserve_soc and night_reserve_soc inherit from base thresholds for balanced.
+    afternoon_lookahead_min_fraction: 0.95
+    # WACS gate: only allow battery export when feedin > cost of stored energy.
+    # cost = wacs_buy_price / wacs_round_trip_efficiency + wacs_degradation_cost_per_kwh
+    wacs_buy_price: 0.30
+    wacs_round_trip_efficiency: 0.90
+    wacs_degradation_cost_per_kwh: 0.02
+    # Evening gap reserve: hold enough battery for load during this window.
+    evening_gap_start_hour: 18
+    evening_gap_end_hour: 22
+    # Variable floor: daytime export floor rises linearly from morning to afternoon.
+    variable_floor_morning_soc: 7.5
+    variable_floor_afternoon_soc: 40.0
+    variable_floor_morning_hour: 9
+    variable_floor_afternoon_hour: 16
+  max_consumption:
+    # SOC floors — profile math hardcodes these; override here to tune them.
+    # midnight_reserve_soc set to 85 (above the 80% goal) to compensate for
+    # overnight load draw — simulation showed ~10% shortfall with 80% target.
+    min_soc_floor: 12.5
+    morning_dump_target_soc: 12.5
+    sunrise_reserve_soc: 12.5
+    night_reserve_soc: 23.0
+    midnight_reserve_soc: 80.0
+    afternoon_lookahead_min_fraction: 0.85
+    # Dynamic weather reserve: raise export floor on adverse forecast days.
+    dynamic_reserve_storm_soc: 50.0
+    dynamic_reserve_wind_soc: 35.0
+    # Morning space creation: auto-enable morning dump when this much solar is forecast.
+    morning_space_forecast_kwh: 15.0
+    # Conditional grid import: only import when tomorrow's solar is below this threshold.
+    conditional_grid_import_solar_kwh: 5.0

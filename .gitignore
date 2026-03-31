@@ -4,3 +4,4 @@ optimizer_state.db
 __pycache__/
 *.csv
 .env
+config.yaml
