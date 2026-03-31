@@ -5,6 +5,8 @@ slug: "sigenergy_optimiser"
 init: false
 homeassistant: "2023.1.0"
 homeassistant_api: true
+ingress: true
+panel_icon: mdi:battery-heart-variant
 
 arch:
   - aarch64
