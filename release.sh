@@ -188,7 +188,9 @@ if git diff --cached --quiet; then
   exit 1
 fi
 
-prompt_commit_message "Release ${TAG}"
+if [ -z "$COMMIT_MESSAGE" ]; then
+  prompt_commit_message "Release ${TAG}"
+fi
 git commit -m "$COMMIT_MESSAGE"
 
 # ── Push branch, tag, push tag ────────────────────────────────────────────────
