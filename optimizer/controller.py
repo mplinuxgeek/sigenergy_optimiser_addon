@@ -391,13 +391,20 @@ class Optimizer:
             hours_to_sunset = 0.0
 
         is_evening_or_night = (hours_to_sunset <= 0.0) or (not is_sun_up and hours_to_sunrise < 18)
+        # Midnight reserve is an evening protection: apply it only after local
+        # sunset, not during the pre-dawn hours of the following morning.
+        is_after_sunset = (
+            not is_sun_up
+            and next_rising is not None
+            and next_rising.date() > now.date()
+        )
 
         LOG.debug(
             "_compute inputs: soc=%.1f%% pv=%.2fkW load=%.2fkW price=%.4f feedin=%.4f "
-            "price_ok=%s feedin_ok=%s spike=%s sun=%s hrs_sunrise=%.1f hrs_sunset=%.1f",
+            "price_ok=%s feedin_ok=%s spike=%s sun=%s hrs_sunrise=%.1f hrs_sunset=%.1f after_sunset=%s",
             battery_soc, pv_kw, load_kw, current_price, feedin_price,
             price_available, feedin_available, price_spike_active,
-            "up" if is_sun_up else "down", hours_to_sunrise, hours_to_sunset,
+            "up" if is_sun_up else "down", hours_to_sunrise, hours_to_sunset, is_after_sunset,
         )
 
         hours_to_pv_cover_load = self._hours_until_pv_exceeds_load(
@@ -424,7 +431,7 @@ class Optimizer:
         # Initialise to the hard target so the relax block below always has a valid
         # forward-looking floor to clamp against, even when the inner condition is skipped.
         min_soc_now_for_midnight = t.midnight_reserve_soc
-        if t.midnight_reserve_soc > 0:
+        if t.midnight_reserve_soc > 0 and is_after_sunset:
             midnight_local = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
             hours_to_midnight = max(0.0, (midnight_local - now).total_seconds() / 3600.0)
             if 0 < hours_to_midnight < 20:
@@ -457,7 +464,7 @@ class Optimizer:
             # fixed midnight_reserve_soc target — clamping to the target alone allows
             # the relax to consume the overnight load margin and leave midnight SoC
             # short of the target.
-            if t.midnight_reserve_soc > 0 and pv_kw < t.min_grid_transfer_kw:
+            if t.midnight_reserve_soc > 0 and is_after_sunset and pv_kw < t.min_grid_transfer_kw:
                 export_floor_soc = max(export_floor_soc, min_soc_now_for_midnight)
 
         # --- Balanced: variable time-of-day floor ---
@@ -628,9 +635,51 @@ class Optimizer:
             dump_end.strftime("%H:%M") if dump_end else "None",
             productive_solar_dt.strftime("%H:%M") if productive_solar_dt else "None",
         )
+        # Max-profits continuation: after the scheduled dump window closes,
+        # keep the battery-discharge event alive through the live morning peak
+        # instead of immediately re-arming the midnight reserve and lookahead
+        # hold. This is intentionally narrow to the market-arbitrage profile.
+        morning_dump_continuation_active = False
+        if (
+            t.morning_dump_enabled
+            and t.forced_export_on_spike_enabled
+            and t.forecast_hold_enabled
+            and not morning_dump_active
+            and dump_end is not None
+            and now > dump_end
+            and now.hour < t.late_morning_hour
+            and battery_soc > morning_dump_floor_soc
+            and feedin_positive
+            and not price_is_negative
+        ):
+            _peak_window_end = now.replace(
+                hour=t.late_morning_hour,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            if _peak_window_end <= now:
+                _peak_window_end = now + timedelta(hours=1)
+            _morning_price_points = self._forecast_price_points(
+                states,
+                [e.feedin_forecast_sensor, e.feedin_sensor],
+            )
+            _future_morning_prices = [
+                v for ts_l, v in _morning_price_points
+                if ts_l > now and ts_l <= _peak_window_end
+            ]
+            _future_morning_max = max(_future_morning_prices, default=0.0)
+            _event_peak_price = max(feedin_price, _future_morning_max)
+            _future_peak_pending = _future_morning_max > feedin_price + 0.001
+            _at_event_peak = (
+                _event_peak_price > 0
+                and feedin_price >= _event_peak_price * max(0.5, t.afternoon_lookahead_min_fraction)
+            )
+            morning_dump_continuation_active = _future_peak_pending or _at_event_peak
+        morning_event_export_active = morning_dump_active or morning_dump_continuation_active
         post_morning_dump_hold_active = (
             t.morning_dump_enabled
-            and not morning_dump_active
+            and not morning_event_export_active
             and dump_end is not None
             and now > dump_end
             and not price_is_negative
@@ -681,9 +730,10 @@ class Optimizer:
             export_reason = "Export blocked (loss)"
         elif (
             t.midnight_reserve_soc > 0
+            and is_after_sunset
             and battery_soc <= t.midnight_reserve_soc
             and (not is_sun_up or forecast_pv_now_kw < t.ess_first_discharge_pv_threshold_kw)
-            and not morning_dump_active
+            and not morning_event_export_active
         ):
             # Hard stop: SoC at/below midnight reserve with no meaningful PV output.
             # Condition uses BOTH sun entity and forecast_pv_now_kw so that a
@@ -701,17 +751,17 @@ class Optimizer:
                 "(soc=%.1f%% <= midnight_reserve=%.1f%% sun_up=%s fc_pv=%.2fkW)",
                 battery_soc, t.midnight_reserve_soc, is_sun_up, forecast_pv_now_kw,
             )
-        elif not soc_above_export_floor and not morning_dump_active and not post_morning_dump_hold_active and not solar_excess_active:
+        elif not soc_above_export_floor and not morning_event_export_active and not post_morning_dump_hold_active and not solar_excess_active:
             desired_export = 0.0
             export_reason = f"Export blocked (reserve {export_floor_soc:.0f}%)"
-        elif not export_hysteresis_allows and not morning_dump_active and not post_morning_dump_hold_active and not solar_excess_active:
+        elif not export_hysteresis_allows and not morning_event_export_active and not post_morning_dump_hold_active and not solar_excess_active:
             desired_export = 0.0
             export_reason = f"Export blocked (FIT hysteresis {feedin_price*100:.0f}c)"
         else:
             soc_ramp = (battery_soc - export_floor_soc) / max(1.0, 100.0 - export_floor_soc)
             soc_ramp = max(0.0, min(1.0, soc_ramp))
             scaled_export = export_tier * soc_ramp
-            if morning_dump_active:
+            if morning_event_export_active:
                 # Sustain export for the full dump window by tapering when remaining
                 # energy above floor cannot support the nominal target rate.
                 remaining_dump_h = max(1.0 / 60.0, (dump_end - now).total_seconds() / 3600.0) if dump_end else (1.0 / 60.0)
@@ -731,6 +781,8 @@ class Optimizer:
                 desired_export = 0.0
             if morning_dump_active:
                 export_reason = f"Morning dump export {desired_export:.1f}kW to floor {morning_dump_floor_soc:.1f}%"
+            elif morning_dump_continuation_active:
+                export_reason = f"Morning peak continuation {desired_export:.1f}kW to floor {morning_dump_floor_soc:.1f}%"
             elif post_morning_dump_hold_active:
                 export_reason = f"Post-morning-dump hold {desired_export:.1f}kW until FIT turns negative"
             elif solar_excess_active and export_tier == 0.0:
@@ -746,7 +798,7 @@ class Optimizer:
         # When morning dump is active, honour the lower morning_dump_floor_soc so
         # the dump can drain through the general daytime_floor_soc down to 2.5%.
         excess_solar_kw = max(0.0, pv_kw - load_kw)
-        active_floor_soc = morning_dump_floor_soc if morning_dump_active else daytime_floor_soc
+        active_floor_soc = morning_dump_floor_soc if morning_event_export_active else daytime_floor_soc
         if battery_soc <= (active_floor_soc + 0.05):
             desired_export = min(desired_export, excess_solar_kw)
             export_reason = f"Export limited to excess solar at floor ({desired_export:.1f}kW)"
@@ -759,7 +811,7 @@ class Optimizer:
         # load) is still allowed since curtailing it would waste free generation.
         if (
             desired_export > 0
-            and not morning_dump_active
+            and not morning_event_export_active
             and t.afternoon_lookahead_hours > 0
             and t.afternoon_lookahead_ratio > 1.0
             and feedin_price > 0
@@ -816,7 +868,7 @@ class Optimizer:
         if (
             t.forecast_hold_enabled
             and t.forecast_hold_start_hour <= now.hour < t.forecast_hold_end_hour
-            and not morning_dump_active
+            and not morning_event_export_active
         ):
             _fh_pts = self._forecast_price_points(states, [e.feedin_forecast_sensor, e.feedin_sensor])
             _fh_upcoming = [v for ts_l, v in _fh_pts if ts_l > now and v >= t.forecast_hold_price_threshold]
@@ -863,7 +915,7 @@ class Optimizer:
             t.battery_saturation_export_enabled
             and desired_export > 0
             and battery_soc < t.battery_saturation_export_soc
-            and not morning_dump_active
+            and not morning_event_export_active
             and not (t.forced_export_on_spike_enabled and feedin_price >= t.forced_export_spike_threshold)
         ):
             desired_export = min(desired_export, solar_excess_export_kw)
@@ -886,7 +938,7 @@ class Optimizer:
         if (
             t.wacs_export_gate_enabled
             and desired_export > 0
-            and not morning_dump_active
+            and not morning_event_export_active
             and not price_spike_active
             and not (t.forced_export_on_spike_enabled and feedin_price >= t.forced_export_spike_threshold)
         ):
