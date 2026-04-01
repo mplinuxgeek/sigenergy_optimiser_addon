@@ -25,7 +25,7 @@
         radial-gradient(circle at 85% 0%, #e7f5ed 0%, transparent 32%),
         var(--bg);
     }
-    .wrap { max-width: 1100px; margin: 0 auto; padding: 18px; }
+    .wrap { max-width: 1420px; margin: 0 auto; padding: 18px; }
     .header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .title { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.02em; }
     .sub { color: var(--muted); font-size: 0.9rem; }
@@ -41,7 +41,24 @@
     .thresh-grid label { font-size: 0.78rem; color: var(--muted); grid-column: 1 / -1; margin-top: 6px; font-weight: 600; }
     .thresh-grid input { padding: 5px 7px; border: 1px solid var(--line); border-radius: 7px; font-size: 0.9rem; width: 100%; box-sizing: border-box; }
     .thresh-header { font-size: 0.75rem; color: var(--muted); font-weight: 700; text-align: center; }
-    .card { border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: #fcfefe; }
+    .card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 6px 10px;
+      background: #fcfefe;
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: var(--meter-pct, 0%);
+      background: linear-gradient(90deg, var(--meter-fill-soft, transparent), var(--meter-fill, transparent));
+      opacity: 0.32;
+      pointer-events: none;
+    }
+    .card > * { position: relative; z-index: 1; }
     .k { color: var(--muted); font-size: 0.82rem; margin-bottom: 4px; }
     .v { font-size: 1.05rem; font-weight: 700; }
     .mono { font-family: "JetBrains Mono", "Consolas", monospace; white-space: pre-wrap; word-break: break-word; font-size: 0.82rem; line-height: 1.4; }
@@ -101,9 +118,10 @@
     .status { margin-top: 8px; color: var(--muted); font-size: 0.88rem; }
     .err { color: var(--err); }
     .controls-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
-    .overview-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 12px; align-items: start; }
+    .overview-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(220px, 300px); gap: 12px; align-items: start; }
     .controls-pane .controls-grid { grid-template-columns: 1fr; }
     .data-pane { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+    .summary-pane { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
     .group { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fcfefe; }
     .group h3 { margin: 0 0 10px 0; font-size: 1rem; }
     .row { display: grid; grid-template-columns: 1fr; gap: 6px; margin-bottom: 10px; }
@@ -113,7 +131,7 @@
     .row input, .row select { padding: 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 0.95rem; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .price-panel { margin-top: 0; border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: #fcfefe; position: relative; }
-    .data-pane .status { margin-top: 0; }
+    .data-pane .status, .summary-pane .status { margin-top: 0; }
     .price-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
     .price-title { font-size: 0.95rem; font-weight: 700; }
     .price-meta { color: var(--muted); font-size: 0.8rem; }
@@ -313,16 +331,28 @@
             </div>
             <svg id="power-chart" class="power-svg" viewBox="0 0 1000 260" preserveAspectRatio="none"></svg>
             <div id="power-tip" class="price-tip"></div>
-          <div class="legend" id="power-legend">
-          <span><span class="dot" style="background:#1e88e5"></span>Battery %</span>
-          <span><span class="dot" style="background:#4fd1c5"></span>Min SoC %</span>
-          <span><span class="dot" style="background:#f59e0b"></span>PV Output kW</span>
-          <span><span class="dot" style="background:#f59e0b"></span>PV Forecast kW</span>
-          <span><span class="dot" style="background:#ef4444"></span>Grid Import kW</span>
-          <span><span class="dot" style="background:#22c55e"></span>Grid Export kW</span>
-          <span><span class="dot" style="background:#a855f7"></span>Consumption kW</span>
-        </div>
-      </div>
+            <div class="legend" id="power-legend">
+              <span><span class="dot" style="background:#1e88e5"></span>Battery %</span>
+              <span><span class="dot" style="background:#4fd1c5"></span>Min SoC %</span>
+              <span><span class="dot" style="background:#f59e0b"></span>PV Output kW</span>
+              <span><span class="dot" style="background:#a855f7"></span>Consumption kW</span>
+            </div>
+          </div>
+
+          <div class="price-panel">
+            <div class="price-head">
+              <div class="price-title">Today Grid Flow & Solar Window</div>
+              <div class="price-meta" id="grid-meta">Loading...</div>
+            </div>
+            <svg id="grid-chart" class="power-svg" viewBox="0 0 1000 260" preserveAspectRatio="none"></svg>
+            <div id="grid-tip" class="price-tip"></div>
+            <div class="legend" id="grid-legend">
+              <span><span class="dot" style="background:#ef4444"></span>Grid Import kW</span>
+              <span><span class="dot" style="background:#22c55e"></span>Grid Export kW</span>
+              <span><span class="dot" style="background:#f59e0b"></span>PV Forecast kW</span>
+              <span>Sun band = daylight, solid = history, dashed = simulation/forecast</span>
+            </div>
+          </div>
 
           <div class="price-panel">
             <div class="price-head">
@@ -339,6 +369,10 @@
             </div>
           </div>
         
+          <div class="status" id="overview-cycle"></div>
+        </div>
+
+        <div class="summary-pane">
           <div class="grid" id="overview-grid"></div>
           <div class="pair-grid" id="overview-pair-grid"></div>
           <div class="status" id="overview-status"></div>
@@ -395,6 +429,7 @@
     const modeLockedControls = new Set();
     let priceChartState = null;
     let powerChartState = null;
+    let gridChartState = null;
     let simulationOverlay = null;
     let simulationComparison = null;
     let simulationEnabled = false;
@@ -588,15 +623,103 @@
       });
     });
 
-    function card(k, v, cls='') {
-      return `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+    function clamp01(v) {
+      return Math.max(0, Math.min(1, Number(v) || 0));
+    }
+
+    function meterScale(value, max) {
+      if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(max)) || Number(max) <= 0) return null;
+      return clamp01(Number(value) / Number(max));
+    }
+
+    function meterTone(fillFraction, colorFraction, hueLo = 8, hueHi = 145) {
+      const fillT = clamp01(fillFraction);
+      const colorT = clamp01(colorFraction);
+      const hue = hueLo + (hueHi - hueLo) * colorT;
+      return {
+        pct: `${(fillT * 100).toFixed(1)}%`,
+        fill: `hsla(${hue.toFixed(1)}, 72%, 48%, 1)`,
+        soft: `hsla(${hue.toFixed(1)}, 78%, 72%, 1)`,
+      };
+    }
+
+    function meterSpec(key, value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return null;
+      switch (key) {
+        case 'battery_soc':
+          return meterTone(meterScale(n, 100), meterScale(n, 100), 8, 145);
+        case 'pv_power':
+          return meterTone(meterScale(n, 22), meterScale(n, 22), 30, 145);
+        case 'pv_max_power_limit':
+        case 'grid_export_limit':
+          return meterTone(meterScale(n, 25), meterScale(n, 25), 30, 145);
+        case 'forecast_kw':
+          return meterTone(meterScale(n, 22), meterScale(n, 22), 30, 145);
+        case 'load_power':
+        case 'grid_import_power':
+        case 'grid_import_limit':
+          return meterTone(meterScale(n, 25), 1 - meterScale(n, 25), 8, 145);
+        case 'grid_export_power':
+          return meterTone(meterScale(Math.abs(n), 25), meterScale(Math.abs(n), 25), 30, 145);
+        case 'price':
+          return meterTone(meterScale(Math.abs(n), 0.5), 1 - meterScale(n, 0.5), 8, 145);
+        case 'feedin':
+          return meterTone(meterScale(Math.abs(n), 0.5), meterScale(n, 0.5), 8, 145);
+        case 'sunrise_req':
+        case 'export_floor':
+          return meterTone(meterScale(n, 100), 1 - meterScale(n, 100), 8, 145);
+        case 'ess_thresh':
+          return meterTone(meterScale(n, 10), meterScale(n, 10), 24, 145);
+        default:
+          return null;
+      }
+    }
+
+    function meterStyleAttr(key, value) {
+      const spec = meterSpec(key, value);
+      if (!spec) return '';
+      return ` style="--meter-pct:${spec.pct};--meter-fill:${spec.fill};--meter-fill-soft:${spec.soft}"`;
+    }
+
+    function card(k, v, cls='', meterKey='', meterValue=null) {
+      return `<div class="card"${meterStyleAttr(meterKey, meterValue)}><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
     }
 
     // liveCard — same as card() but stamps a data-live attribute on the value element.
     // _applyHaState() finds these via querySelectorAll and updates them instantly
     // whenever HA pushes a state_changed event over the WebSocket.
-    function liveCard(k, v, liveKey, cls='') {
-      return `<div class="card"><div class="k">${k}</div><div class="v ${cls}" data-live="${liveKey}">${asText(v)}</div></div>`;
+    function liveCard(k, v, liveKey, cls='', meterValue=null) {
+      return `<div class="card" data-meter-live="${liveKey}"${meterStyleAttr(liveKey, meterValue)}><div class="k">${k}</div><div class="v ${cls}" data-live="${liveKey}">${asText(v)}</div></div>`;
+    }
+
+    function normalizeMeterValue(key, raw, unit='') {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return null;
+      switch (key) {
+        case 'pv_power':
+        case 'load_power':
+        case 'grid_export_power':
+        case 'grid_import_power':
+          return (unit === 'W' || (unit === '' && n > 100)) ? n / 1000 : n;
+        default:
+          return n;
+      }
+    }
+
+    function applyMeterStyle(el, key, raw, unit='') {
+      if (!el) return;
+      const value = normalizeMeterValue(key, raw, unit);
+      const spec = meterSpec(key, value);
+      if (!spec) {
+        el.style.removeProperty('--meter-pct');
+        el.style.removeProperty('--meter-fill');
+        el.style.removeProperty('--meter-fill-soft');
+        return;
+      }
+      el.style.setProperty('--meter-pct', spec.pct);
+      el.style.setProperty('--meter-fill', spec.fill);
+      el.style.setProperty('--meter-fill-soft', spec.soft);
     }
 
     // Format an entity state value for display in a live card.
@@ -961,11 +1084,7 @@
       return points.map((p, i) => `${i ? 'L' : 'M'} ${xOf(p.t).toFixed(2)} ${yOf(p.v).toFixed(2)}`).join(' ');
     }
 
-    function drawPowerChart(payload) {
-      const svg = document.getElementById('power-chart');
-      const meta = document.getElementById('power-meta');
-      if (!svg || !meta) return;
-
+    function preparePowerSeries(payload) {
       const width = 1000;
       const height = 260;
       const m = { left: 56, right: 42, top: 16, bottom: 34 };
@@ -1029,16 +1148,30 @@
       const pvOutputLine = simulationEnabled && simPvOutput.length ? simPvOutput : pvOutput;
       const gridExportDisplay = gridExport;
       const simExportDisplay = simExport;
+      const sun = payload.sun || {};
+      const sunriseMs = sun.sunrise ? new Date(sun.sunrise).getTime() : NaN;
+      const sunsetMs = sun.sunset ? new Date(sun.sunset).getTime() : NaN;
+
+      return {
+        width, height, m, plotW, plotH, t0, t1, now,
+        nowMs, sunriseMs, sunsetMs,
+        batterySoc, minSoc, pvOutput, pvForecast, gridImport, gridExport, consumption,
+        simConsumption, simPvOutput, simPvCurtail, simRaw, simBattery, simImport, simExport,
+        batteryLine, consumptionLine, pvOutputLine, gridExportDisplay, simExportDisplay,
+      };
+    }
+
+    function drawPowerChart(payload) {
+      const svg = document.getElementById('power-chart');
+      const meta = document.getElementById('power-meta');
+      if (!svg || !meta) return;
+
+      const ctx = preparePowerSeries(payload);
+      const { width, height, m, plotW, plotH, t0, t1, now, sunriseMs, sunsetMs, batteryLine, minSoc, pvOutputLine, consumptionLine, pvForecast, simPvCurtail } = ctx;
 
       const leftVals = [
-        ...pvOutput,
         ...pvOutputLine,
-        ...pvForecast,
         ...consumptionLine,
-        ...(showLiveGrid ? gridImport : []),
-        ...(showLiveGrid ? gridExportDisplay : []),
-        ...simImport,
-        ...simExportDisplay,
       ].map(p => p.v);
       const leftMax = Math.max(1, ...leftVals, 0) * 1.1;
       const rightMin = 0;
@@ -1070,9 +1203,6 @@
         grid += `<text x="${x.toFixed(2)}" y="${(height - 10).toFixed(2)}" text-anchor="middle" font-size="11" fill="#4c6a64">${label}</text>`;
       }
 
-      const sun = payload.sun || {};
-      const sunriseMs = sun.sunrise ? new Date(sun.sunrise).getTime() : NaN;
-      const sunsetMs = sun.sunset ? new Date(sun.sunset).getTime() : NaN;
       const sunBand = buildSunBandPath(
         Math.max(t0, sunriseMs),
         Math.min(t1, sunsetMs),
@@ -1080,36 +1210,25 @@
         m.top + plotH,
         Math.max(0, plotH - 4)
       );
-
       const pvForecastHist = pvForecast.filter(p => p.k !== 'forecast');
       const pvForecastFc = pvForecast.filter(p => p.k === 'forecast');
       const pvForecastHistSegments = splitPositiveSegments(pvForecastHist, 0.01);
       const pvForecastFcSegments = splitPositiveSegments(pvForecastFc, 0.01);
-      // Use a dedicated full-height scale for the forecast overlay so it fills the
-      // chart like the price chart does — the actual PV output line stays on yLeftOf.
       const pvFcMax = Math.max(0.1, ...pvForecast.map(p => p.v), 0);
       const yPvFcOf = (v) => m.top + (1 - (Math.max(0, Math.min(pvFcMax, v)) / pvFcMax)) * plotH;
-      const pvForecastHistAreas = pvForecastHistSegments.map(seg => buildAreaPath(seg, xOf, yPvFcOf, m.top + plotH));
-      const pvForecastFcAreas = pvForecastFcSegments.map(seg => buildAreaPath(seg, xOf, yPvFcOf, m.top + plotH));
-      const pvForecastHistPaths = pvForecastHistSegments.map(seg => buildPath(seg, xOf, yPvFcOf));
-      const pvForecastFcPaths = pvForecastFcSegments.map(seg => buildPath(seg, xOf, yPvFcOf));
 
       svg.innerHTML = `
         ${sunBand ? `<path d="${esc(sunBand)}" fill="#c36a1f" fill-opacity="0.10" stroke="none" />` : ''}
         ${grid}
         <line x1="${nowX.toFixed(2)}" y1="${m.top}" x2="${nowX.toFixed(2)}" y2="${(m.top + plotH).toFixed(2)}" stroke="#0891b2" stroke-width="1.2" stroke-dasharray="4 4" />
+        ${pvForecastHistSegments.map(seg => `<path d="${esc(buildAreaPath(seg, xOf, yPvFcOf, m.top + plotH))}" fill="#f59e0b" fill-opacity="0.10" stroke="none" />`).join('')}
+        ${pvForecastFcSegments.map(seg => `<path d="${esc(buildAreaPath(seg, xOf, yPvFcOf, m.top + plotH))}" fill="#f59e0b" fill-opacity="0.06" stroke="none" />`).join('')}
+        ${pvForecastHistSegments.map(seg => `<path d="${esc(buildPath(seg, xOf, yPvFcOf))}" fill="none" stroke="#f59e0b" stroke-width="1.9" />`).join('')}
+        ${pvForecastFcSegments.map(seg => `<path d="${esc(buildPath(seg, xOf, yPvFcOf))}" fill="none" stroke="#f59e0b" stroke-width="1.9" stroke-dasharray="6 4" />`).join('')}
         ${pathFromPoints(batteryLine, xOf, yRightOf) ? `<path d="${esc(pathFromPoints(batteryLine, xOf, yRightOf))}" fill="none" stroke="#1e88e5" stroke-width="2.2" ${simulationEnabled ? 'stroke-dasharray="6 4"' : ''} />` : ''}
         ${(!simulationEnabled && pathFromPoints(minSoc, xOf, yRightOf)) ? `<path d="${esc(pathFromPoints(minSoc, xOf, yRightOf))}" fill="none" stroke="#4fd1c5" stroke-width="2.0" />` : ''}
         ${pathFromPoints(pvOutputLine, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(pvOutputLine, xOf, yLeftOf))}" fill="none" stroke="#f59e0b" stroke-width="2.0" ${simulationEnabled ? 'stroke-dasharray="6 4"' : ''} />` : ''}
-        ${pvForecastHistAreas.map(d => `<path d="${esc(d)}" fill="#f59e0b" fill-opacity="0.10" stroke="none" />`).join('')}
-        ${pvForecastFcAreas.map(d => `<path d="${esc(d)}" fill="#f59e0b" fill-opacity="0.06" stroke="none" />`).join('')}
-        ${pvForecastHistPaths.map(d => `<path d="${esc(d)}" fill="none" stroke="#f59e0b" stroke-width="1.9" />`).join('')}
-        ${pvForecastFcPaths.map(d => `<path d="${esc(d)}" fill="none" stroke="#f59e0b" stroke-width="1.9" stroke-dasharray="6 4" />`).join('')}
-        ${showLiveGrid && pathFromPoints(gridImport, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(gridImport, xOf, yLeftOf))}" fill="none" stroke="#ef4444" stroke-width="1.8" />` : ''}
-        ${showLiveGrid && pathFromPoints(gridExportDisplay, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(gridExportDisplay, xOf, yLeftOf))}" fill="none" stroke="#22c55e" stroke-width="1.8" />` : ''}
         ${pathFromPoints(consumptionLine, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(consumptionLine, xOf, yLeftOf))}" fill="none" stroke="#a855f7" stroke-width="1.8" ${simulationEnabled ? 'stroke-dasharray="6 4"' : ''} />` : ''}
-        ${pathFromPoints(simImport, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(simImport, xOf, yLeftOf))}" fill="none" stroke="#0891b2" stroke-width="2.2" stroke-dasharray="6 4" />` : ''}
-        ${pathFromPoints(simExportDisplay, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(simExportDisplay, xOf, yLeftOf))}" fill="none" stroke="#ea580c" stroke-width="2.2" stroke-dasharray="6 4" />` : ''}
         <line id="power-hover-line" x1="0" y1="${m.top}" x2="0" y2="${(m.top + plotH).toFixed(2)}" stroke="#0f172a" stroke-opacity="0.45" stroke-width="1" stroke-dasharray="3 4" style="display:none" />
       `;
 
@@ -1121,7 +1240,7 @@
       const simCurtailText = simulationEnabled && simCurtailNow !== null && simCurtailNow !== undefined
         ? `, Sim curtail ${Number(simCurtailNow).toFixed(2)}kW`
         : '';
-      meta.textContent = `Now: Battery ${current(batteryLine)?.toFixed(1) ?? '-'}%, Min SoC ${current(minSoc)?.toFixed(1) ?? '-'}%, PV ${current(pvOutputLine)?.toFixed(1) ?? '-'}kW, Forecast ${current(pvForecast)?.toFixed(1) ?? '-'}kW${simText}${simLoadText}${simCurtailText}`;
+      meta.textContent = `Now: Battery ${current(batteryLine)?.toFixed(1) ?? '-'}%, Min SoC ${current(minSoc)?.toFixed(1) ?? '-'}%, PV ${current(pvOutputLine)?.toFixed(1) ?? '-'}kW, Forecast ${current(pvForecast)?.toFixed(1) ?? '-'}kW, Load ${current(consumptionLine)?.toFixed(1) ?? '-'}kW${simText}${simLoadText}${simCurtailText}`;
       const legend = document.getElementById('power-legend');
       if (legend) {
         legend.innerHTML = simulationEnabled
@@ -1130,16 +1249,12 @@
             <span><span class="dot" style="background:#f59e0b"></span>Sim PV Output kW</span>
             <span><span class="dot" style="background:#f59e0b"></span>PV Forecast kW</span>
             <span><span class="dot" style="background:#a855f7"></span>Sim Consumption kW</span>
-            <span><span class="dot" style="background:#0891b2"></span>Sim Import kW</span>
-            <span><span class="dot" style="background:#ea580c"></span>Sim Export kW</span>
           `
           : `
             <span><span class="dot" style="background:#1e88e5"></span>Battery %</span>
             <span><span class="dot" style="background:#4fd1c5"></span>Min SoC %</span>
             <span><span class="dot" style="background:#f59e0b"></span>PV Output kW</span>
             <span><span class="dot" style="background:#f59e0b"></span>PV Forecast kW</span>
-            <span><span class="dot" style="background:#ef4444"></span>Grid Import kW</span>
-            <span><span class="dot" style="background:#22c55e"></span>Grid Export kW</span>
             <span><span class="dot" style="background:#a855f7"></span>Consumption kW</span>
           `;
       }
@@ -1147,21 +1262,85 @@
       powerChartState = {
         t0, t1, m, plotW, xOf,
         series: {
-          batterySoc,
           batteryLine,
-          simBattery,
           minSoc: simulationEnabled ? [] : minSoc,
           pvOutput: pvOutputLine,
-          simPvOutput,
-          simPvCurtail,
           pvForecast,
-          gridImport: showLiveGrid ? gridImport : [],
-          gridExport: showLiveGrid ? gridExportDisplay : [],
           consumption: consumptionLine,
-          simConsumption,
+        },
+      };
+    }
+
+    function drawGridChart(payload) {
+      const svg = document.getElementById('grid-chart');
+      const meta = document.getElementById('grid-meta');
+      if (!svg || !meta) return;
+
+      const ctx = preparePowerSeries(payload);
+      const { width, height, m, plotW, plotH, t0, t1, now, sunriseMs, sunsetMs, pvForecast, gridImport, gridExportDisplay, simImport, simExportDisplay, simRaw } = ctx;
+      const showLiveGrid = !simulationEnabled;
+      const leftVals = [
+        ...(showLiveGrid ? gridImport : []),
+        ...(showLiveGrid ? gridExportDisplay : []),
+        ...simImport,
+        ...simExportDisplay,
+        ...pvForecast,
+      ].map(p => Math.abs(p.v));
+      const leftMax = Math.max(1, ...leftVals, 0) * 1.1;
+      const xOf = (t) => m.left + ((Math.min(t1, Math.max(t0, t)) - t0) / (t1 - t0)) * plotW;
+      const yLeftOf = (v) => m.top + (1 - (Math.max(0, Math.min(leftMax, Math.abs(v))) / leftMax)) * plotH;
+      const nowX = xOf(now.getTime());
+
+      let grid = '';
+      for (let i = 0; i <= 6; i++) {
+        const frac = i / 6;
+        const y = m.top + frac * plotH;
+        const lv = leftMax - frac * leftMax;
+        grid += `<line x1="${m.left}" y1="${y.toFixed(2)}" x2="${(width - m.right).toFixed(2)}" y2="${y.toFixed(2)}" stroke="#d5dfdd" stroke-width="1" />`;
+        grid += `<text x="${(m.left - 8).toFixed(2)}" y="${(y + 4).toFixed(2)}" text-anchor="end" font-size="11" fill="#4c6a64">${lv.toFixed(1)}</text>`;
+      }
+      for (let i = 0; i <= 8; i++) {
+        const frac = i / 8;
+        const t = t0 + frac * (t1 - t0);
+        const x = m.left + frac * plotW;
+        const d = new Date(t);
+        const label = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        grid += `<line x1="${x.toFixed(2)}" y1="${m.top}" x2="${x.toFixed(2)}" y2="${(m.top + plotH).toFixed(2)}" stroke="#eef2f1" stroke-width="1" />`;
+        grid += `<text x="${x.toFixed(2)}" y="${(height - 10).toFixed(2)}" text-anchor="middle" font-size="11" fill="#4c6a64">${label}</text>`;
+      }
+
+      const sunBand = buildSunBandPath(Math.max(t0, sunriseMs), Math.min(t1, sunsetMs), xOf, m.top + plotH, Math.max(0, plotH - 4));
+      const pvForecastHist = pvForecast.filter(p => p.k !== 'forecast');
+      const pvForecastFc = pvForecast.filter(p => p.k === 'forecast');
+      const pvForecastHistSegments = splitPositiveSegments(pvForecastHist, 0.01);
+      const pvForecastFcSegments = splitPositiveSegments(pvForecastFc, 0.01);
+      const pvFcMax = Math.max(0.1, ...pvForecast.map(p => p.v), 0);
+      const yPvFcOf = (v) => m.top + (1 - (Math.max(0, Math.min(pvFcMax, v)) / pvFcMax)) * plotH;
+
+      svg.innerHTML = `
+        ${sunBand ? `<path d="${esc(sunBand)}" fill="#c36a1f" fill-opacity="0.10" stroke="none" />` : ''}
+        ${grid}
+        <line x1="${nowX.toFixed(2)}" y1="${m.top}" x2="${nowX.toFixed(2)}" y2="${(m.top + plotH).toFixed(2)}" stroke="#0891b2" stroke-width="1.2" stroke-dasharray="4 4" />
+        ${pvForecastHistSegments.map(seg => `<path d="${esc(buildAreaPath(seg, xOf, yPvFcOf, m.top + plotH))}" fill="#f59e0b" fill-opacity="0.10" stroke="none" />`).join('')}
+        ${pvForecastFcSegments.map(seg => `<path d="${esc(buildAreaPath(seg, xOf, yPvFcOf, m.top + plotH))}" fill="#f59e0b" fill-opacity="0.06" stroke="none" />`).join('')}
+        ${pvForecastHistSegments.map(seg => `<path d="${esc(buildPath(seg, xOf, yPvFcOf))}" fill="none" stroke="#f59e0b" stroke-width="1.9" />`).join('')}
+        ${pvForecastFcSegments.map(seg => `<path d="${esc(buildPath(seg, xOf, yPvFcOf))}" fill="none" stroke="#f59e0b" stroke-width="1.9" stroke-dasharray="6 4" />`).join('')}
+        ${showLiveGrid && pathFromPoints(gridImport, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(gridImport, xOf, yLeftOf))}" fill="none" stroke="#ef4444" stroke-width="1.8" />` : ''}
+        ${showLiveGrid && pathFromPoints(gridExportDisplay, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(gridExportDisplay, xOf, yLeftOf))}" fill="none" stroke="#22c55e" stroke-width="1.8" />` : ''}
+        ${pathFromPoints(simImport, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(simImport, xOf, yLeftOf))}" fill="none" stroke="#0891b2" stroke-width="2.2" stroke-dasharray="6 4" />` : ''}
+        ${pathFromPoints(simExportDisplay, xOf, yLeftOf) ? `<path d="${esc(pathFromPoints(simExportDisplay, xOf, yLeftOf))}" fill="none" stroke="#ea580c" stroke-width="2.2" stroke-dasharray="6 4" />` : ''}
+        <line id="grid-hover-line" x1="0" y1="${m.top}" x2="0" y2="${(m.top + plotH).toFixed(2)}" stroke="#0f172a" stroke-opacity="0.45" stroke-width="1" stroke-dasharray="3 4" style="display:none" />
+      `;
+
+      const current = (arr) => arr.length ? arr[arr.length - 1].v : null;
+      meta.textContent = `Now: Import ${current(showLiveGrid ? gridImport : simImport)?.toFixed(2) ?? '-'}kW, Export ${current(showLiveGrid ? gridExportDisplay : simExportDisplay)?.toFixed(2) ?? '-'}kW, Forecast ${current(pvForecast)?.toFixed(1) ?? '-'}kW`;
+      gridChartState = {
+        t0, t1, m, plotW, xOf,
+        series: {
+          gridImport: showLiveGrid ? gridImport : simImport,
+          gridExport: showLiveGrid ? gridExportDisplay : simExportDisplay,
+          pvForecast,
           simRaw,
-          simImport,
-          simExport: simExportDisplay,
         },
       };
     }
@@ -1190,16 +1369,11 @@
       const t = powerChartState.t0 + ((clampedX - powerChartState.m.left) / powerChartState.plotW) * (powerChartState.t1 - powerChartState.t0);
 
       const s = powerChartState.series;
-      const b = nearestByTime(s.batteryLine || s.batterySoc, t);
+      const b = nearestByTime(s.batteryLine, t);
       const m = simulationEnabled ? null : nearestByTime(s.minSoc, t);
       const pv = nearestByTime(s.pvOutput, t);
       const pvf = nearestByTime(s.pvForecast, t);
-      const gi = nearestByTime(s.gridImport, t);
-      const ge = nearestByTime(s.gridExport, t);
       const c = nearestByTime(s.consumption, t);
-      const si = nearestByTime(s.simImport, t);
-      const se = nearestByTime(s.simExport, t);
-      const sr = nearestByTime(s.simRaw, t);
 
       const rx = powerChartState.xOf(t);
       line.setAttribute('x1', rx.toFixed(2));
@@ -1211,15 +1385,7 @@
         ${!simulationEnabled ? `<div class="tip-row">Min SoC: ${m ? `${m.v.toFixed(1)}%` : '-'}</div>` : ''}
         <div class="tip-row">PV Output: ${pv ? `${pv.v.toFixed(2)} kW` : '-'}</div>
         <div class="tip-row">PV Forecast: ${pvf ? `${pvf.v.toFixed(2)} kW` : '-'}</div>
-        ${!simulationEnabled ? `<div class="tip-row">Grid Import: ${gi ? `${gi.v.toFixed(2)} kW` : '-'}</div>` : ''}
-        ${!simulationEnabled ? `<div class="tip-row">Grid Export: ${ge ? `${Math.abs(ge.v).toFixed(2)} kW` : '-'}</div>` : ''}
         <div class="tip-row">${simulationEnabled ? 'Sim Consumption' : 'Consumption'}: ${c ? `${c.v.toFixed(2)} kW` : '-'}</div>
-        ${simulationEnabled ? `<div class="tip-row">Sim Import: ${si ? `${si.v.toFixed(2)} kW` : '-'}</div>` : ''}
-        ${simulationEnabled ? `<div class="tip-row">Sim Export: ${se ? `${Math.abs(se.v).toFixed(2)} kW` : '-'}</div>` : ''}
-        ${simulationEnabled ? `<div class="tip-row">Sim PV Curtailed: ${sr ? sr.pvCurtailed.toFixed(2) : '-'}</div>` : ''}
-        ${simulationEnabled ? `<div class="tip-row">Sim Import ${sr ? (sr.importEarnings >= 0 ? `Earnings: ${sr.importEarnings.toFixed(3)}` : `Cost: ${Math.abs(sr.importEarnings).toFixed(3)}`) : '-'}</div>` : ''}
-        ${simulationEnabled ? `<div class="tip-row">Sim Export ${sr ? (sr.exportEarnings >= 0 ? `Earnings: ${sr.exportEarnings.toFixed(3)}` : `Cost: ${Math.abs(sr.exportEarnings).toFixed(3)}`) : '-'}</div>` : ''}
-        ${simulationEnabled ? `<div class="tip-row">Sim Net ${sr ? ((sr.cumImportEarnings + sr.cumExportEarnings) >= 0 ? `Earnings: ${(sr.cumImportEarnings + sr.cumExportEarnings).toFixed(2)}` : `Cost: ${Math.abs(sr.cumImportEarnings + sr.cumExportEarnings).toFixed(2)}`) : '-'}</div>` : ''}
       `;
       const panelRect = panel.getBoundingClientRect();
       const left = Math.min(panelRect.width - 220, Math.max(8, (ev.clientX - panelRect.left) + 12));
@@ -1232,6 +1398,48 @@
     function clearPowerHover() {
       const tip = document.getElementById('power-tip');
       const line = document.getElementById('power-hover-line');
+      if (tip) tip.style.display = 'none';
+      if (line) line.style.display = 'none';
+    }
+
+    function handleGridHover(ev) {
+      if (!gridChartState) return;
+      const svg = document.getElementById('grid-chart');
+      const panel = svg ? svg.closest('.price-panel') : null;
+      const tip = document.getElementById('grid-tip');
+      const line = document.getElementById('grid-hover-line');
+      if (!svg || !panel || !tip || !line) return;
+      const rect = svg.getBoundingClientRect();
+      const vx = ((ev.clientX - rect.left) / rect.width) * 1000;
+      const clampedX = Math.max(gridChartState.m.left, Math.min(gridChartState.m.left + gridChartState.plotW, vx));
+      const t = gridChartState.t0 + ((clampedX - gridChartState.m.left) / gridChartState.plotW) * (gridChartState.t1 - gridChartState.t0);
+      const s = gridChartState.series;
+      const gi = nearestByTime(s.gridImport, t);
+      const ge = nearestByTime(s.gridExport, t);
+      const pvf = nearestByTime(s.pvForecast, t);
+      const sr = nearestByTime(s.simRaw, t);
+      const rx = gridChartState.xOf(t);
+      line.setAttribute('x1', rx.toFixed(2));
+      line.setAttribute('x2', rx.toFixed(2));
+      line.style.display = '';
+      tip.innerHTML = `
+        <div class="tip-time">${fmtTimeLabel(t)}</div>
+        <div class="tip-row">${simulationEnabled ? 'Sim Import' : 'Grid Import'}: ${gi ? `${Math.abs(gi.v).toFixed(2)} kW` : '-'}</div>
+        <div class="tip-row">${simulationEnabled ? 'Sim Export' : 'Grid Export'}: ${ge ? `${Math.abs(ge.v).toFixed(2)} kW` : '-'}</div>
+        <div class="tip-row">PV Forecast: ${pvf ? `${pvf.v.toFixed(2)} kW` : '-'}</div>
+        ${simulationEnabled ? `<div class="tip-row">Sim PV Curtailed: ${sr ? sr.pvCurtailed.toFixed(2) : '-'}</div>` : ''}
+      `;
+      const panelRect = panel.getBoundingClientRect();
+      const left = Math.min(panelRect.width - 220, Math.max(8, (ev.clientX - panelRect.left) + 12));
+      const top = Math.max(8, (ev.clientY - panelRect.top) - 86);
+      tip.style.left = `${left}px`;
+      tip.style.top = `${top}px`;
+      tip.style.display = 'block';
+    }
+
+    function clearGridHover() {
+      const tip = document.getElementById('grid-tip');
+      const line = document.getElementById('grid-hover-line');
       if (tip) tip.style.display = 'none';
       if (line) line.style.display = 'none';
     }
@@ -1258,6 +1466,7 @@
       const r = await fetch(appPath('/api/power'));
       const data = await r.json();
       drawPowerChart(data);
+      drawGridChart(data);
     }
 
     async function toggleSimulation() {
@@ -1330,27 +1539,28 @@
 
       // Status cards — live-keyed cards update directly from WS ha_state pushes.
       const cards = [
-        card('Cycle Completed', rt.last_cycle_completed || '-'),
-        card('Poll (s)', rt.poll_seconds || '-'),
-        liveCard('Battery SoC', eLive('battery_soc', d.battery_soc != null ? Number(d.battery_soc).toFixed(1) + '%' : '-'), 'battery_soc'),
-        liveCard('PV Power', eLive('pv_power'), 'pv_power'),
-        liveCard('Load', eLive('load_power'), 'load_power'),
-        liveCard('Grid Export', eLive('grid_export_power'), 'grid_export_power'),
-        liveCard('Grid Import', eLive('grid_import_power'), 'grid_import_power'),
-        card('Sunrise SoC Req %', d.sunrise_soc_required ?? '-'),
-        card('Export Floor SoC %', d.export_floor_soc ?? '-'),
+        liveCard('Battery SoC', eLive('battery_soc', d.battery_soc != null ? Number(d.battery_soc).toFixed(1) + '%' : '-'), 'battery_soc', '', eState('battery_soc') ?? d.battery_soc),
+        liveCard('PV Power', eLive('pv_power'), 'pv_power', '', eState('pv_power') ?? null),
+        liveCard('Load', eLive('load_power'), 'load_power', '', eState('load_power') ?? null),
+        liveCard('Grid Export', eLive('grid_export_power'), 'grid_export_power', '', eState('grid_export_power') ?? null),
+        liveCard('Grid Import', eLive('grid_import_power'), 'grid_import_power', '', eState('grid_import_power') ?? null),
+        card('Sunrise SoC Req %', d.sunrise_soc_required ?? '-', '', 'sunrise_req', d.sunrise_soc_required),
+        card('Export Floor SoC %', d.export_floor_soc ?? '-', '', 'export_floor', d.export_floor_soc),
       ];
       document.getElementById('overview-grid').innerHTML = cards.join('');
+      document.getElementById('overview-cycle').textContent = rt.last_cycle_completed
+        ? `Cycle completed: ${rt.last_cycle_completed}`
+        : 'Cycle completed: -';
       // Price (left col) / kW value (right col) paired grid
       const priceFmt = v => v != null ? (v * 100).toFixed(1) + 'c' : '-';
       const kwFmt   = v => v != null ? Number(v).toFixed(2) + ' kW' : '-';
       const pairs = [
-        [liveCard('Import Price', eLive('price', priceFmt(d.current_price)), 'price'),
-         liveCard('Export Limit', eLive('grid_export_limit', kwFmt(d.desired_export_limit)), 'grid_export_limit')],
-        [liveCard('Feed-In Price', eLive('feedin', priceFmt(d.feedin_price)), 'feedin'),
-         liveCard('Import Limit', eLive('grid_import_limit', kwFmt(d.desired_import_limit)), 'grid_import_limit')],
-        [liveCard('PV Max', eLive('pv_max_power_limit', kwFmt(d.desired_pv_max_power_limit)), 'pv_max_power_limit'),
-         card('ESS-First PV Thresh', thresholds.ess_first_discharge_pv_threshold_kw != null ? thresholds.ess_first_discharge_pv_threshold_kw.toFixed(1) + ' kW' : '-')],
+        [liveCard('Import Price', eLive('price', priceFmt(d.current_price)), 'price', '', eState('price') ?? d.current_price),
+         liveCard('Export Limit', eLive('grid_export_limit', kwFmt(d.desired_export_limit)), 'grid_export_limit', '', eState('grid_export_limit') ?? d.desired_export_limit)],
+        [liveCard('Feed-In Price', eLive('feedin', priceFmt(d.feedin_price)), 'feedin', '', eState('feedin') ?? d.feedin_price),
+         liveCard('Import Limit', eLive('grid_import_limit', kwFmt(d.desired_import_limit)), 'grid_import_limit', '', eState('grid_import_limit') ?? d.desired_import_limit)],
+        [liveCard('PV Max', eLive('pv_max_power_limit', kwFmt(d.desired_pv_max_power_limit)), 'pv_max_power_limit', '', eState('pv_max_power_limit') ?? d.desired_pv_max_power_limit),
+         card('ESS-First PV Thresh', thresholds.ess_first_discharge_pv_threshold_kw != null ? thresholds.ess_first_discharge_pv_threshold_kw.toFixed(1) + ' kW' : '-', '', 'ess_thresh', thresholds.ess_first_discharge_pv_threshold_kw)],
       ];
       document.getElementById('overview-pair-grid').innerHTML = pairs.flat().join('');
       document.getElementById('overview-status').textContent = d.reason || '';
@@ -1826,6 +2036,11 @@
       powerSvg.addEventListener('mousemove', handlePowerHover);
       powerSvg.addEventListener('mouseleave', clearPowerHover);
     }
+    const gridSvg = document.getElementById('grid-chart');
+    if (gridSvg) {
+      gridSvg.addEventListener('mousemove', handleGridHover);
+      gridSvg.addEventListener('mouseleave', clearGridHover);
+    }
 
     refreshAll();
 
@@ -1879,6 +2094,9 @@
         el.classList.remove('live-flash');
         void el.offsetWidth; // force style reflow so the animation restarts
         el.classList.add('live-flash');
+      });
+      document.querySelectorAll(`.card[data-meter-live="${CSS.escape(msg.key)}"]`).forEach((cardEl) => {
+        applyMeterStyle(cardEl, msg.key, msg.state, msg.unit || '');
       });
 
       // For control entities schedule a debounced controls refresh to sync
