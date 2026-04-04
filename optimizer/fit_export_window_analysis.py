@@ -1,32 +1,67 @@
-"""fit_export_window_analysis.py — export window candidate ranking for FIT prices."""
+"""Export window candidate ranking for FIT prices without heavy numeric deps."""
+
+from __future__ import annotations
 
 import math
 import warnings
+from datetime import datetime, timedelta
+from statistics import stdev
+from typing import Any, Iterable
 
-import numpy as np
-import pandas as pd
 
-# Preferred output column order (columns absent from a given run are skipped)
-_COLUMN_ORDER = [
-    "start_time",
-    "window_end_time",
-    "fit_at_start",
-    "avg_fit_next_hour",
-    "min_fit_next_hour",
-    "max_fit_next_hour",
-    "fit_std_next_hour",
-    "samples_in_window",
-    "general_at_start",
-    "fit_vs_general",
-    "avg_renewables",
-    "conf_low",
-    "conf_high",
-    "has_estimate",
-]
+class WindowCandidates(list):
+    @property
+    def empty(self) -> bool:
+        return len(self) == 0
+
+    def iterrows(self):
+        for idx, row in enumerate(self):
+            yield idx, row
+
+
+def _is_finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, "", 0, "0", "false", "False", "FALSE", "off", "OFF"):
+        return False
+    return True
+
+
+def _normalise_rows(price_table: Any) -> list[dict[str, Any]]:
+    if isinstance(price_table, list):
+        rows = [dict(row) for row in price_table if isinstance(row, dict)]
+    else:
+        raise TypeError("price_table must be a list of row dicts indexed by 'time'")
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        ts = row.get("time")
+        if not isinstance(ts, datetime):
+            continue
+        fit = row.get("fit")
+        if not _is_finite_number(fit):
+            continue
+        item = {"time": ts, "fit": float(fit)}
+        for key in ("general", "renewables", "predicted_low", "predicted_high"):
+            value = row.get(key)
+            if _is_finite_number(value):
+                item[key] = float(value)
+        if "is_estimate" in row:
+            item["is_estimate"] = _coerce_bool(row.get("is_estimate"))
+        spike_status = row.get("spike_status")
+        if spike_status is not None:
+            item["spike_status"] = str(spike_status).strip().lower()
+        out.append(item)
+    out.sort(key=lambda row: row["time"])
+    return out
 
 
 def get_export_window_candidates(
-    price_table: pd.DataFrame,
+    price_table,
     period: str,
     top_n: int = 10,
     morning_end_hour: int = 9,
@@ -37,340 +72,157 @@ def get_export_window_candidates(
     renewables_weight: float = 0.0,
     exclude_spike: bool = False,
     min_samples: int = 1,
-) -> pd.DataFrame:
-    """Rank candidate export start times within a given period.
-
-    For each valid start time in the period the function looks at the following
-    ``window_minutes`` and calculates a time-weighted average FIT price.
-    Candidates are ranked by a composite score (highest first), then by FIT at
-    start (highest first), then by start time (earliest first).
-
-    Parameters
-    ----------
-    price_table:
-        DataFrame indexed by naive local timestamps with at least a ``fit``
-        column.  Optional enrichment columns: ``general``, ``renewables``,
-        ``predicted_low``, ``predicted_high``, ``is_estimate``, ``spike_status``.
-    period:
-        One of ``'morning'``, ``'daytime'``, or ``'evening'``.
-    top_n:
-        Maximum number of candidates to return.  Must be >= 1.
-    morning_end_hour:
-        Hour (exclusive) at which the morning period ends.  Must be in [1, 23].
-        Default 9.
-    evening_start_hour:
-        Hour (inclusive) at which the evening period starts.  Default 19.
-    daytime_start_hour:
-        Hour (inclusive) at which the daytime period starts.  Default 9.
-    daytime_end_hour:
-        Hour (exclusive) at which the daytime period ends.  Default 15.
-    window_minutes:
-        Length of the evaluation window in minutes.  Must be >= 1.  Default 60.
-    renewables_weight:
-        Weight applied to the average renewables percentage when computing the
-        composite score.  Units are FIT-price per 1 % renewables — e.g. with FIT
-        in $/kWh, a value of ``0.001`` adds at most ~0.1 $/kWh for 100 %
-        renewables.  Must be a finite number.  Set to 0.0 (default) to rank by
-        price only.
-    exclude_spike:
-        When True, candidates whose window start coincides with a ``spike`` or
-        ``potential`` spike status are excluded.  Rows where ``spike_status`` is
-        NaN are treated as non-spike (not excluded).  A warning is emitted if
-        ``exclude_spike=True`` but no spike data aligns with the fit timestamps.
-    min_samples:
-        Minimum number of FIT samples required within the window for a candidate
-        to be included.  Default 1 (no filtering).  Raise to 2 or higher to
-        drop candidates backed by a single data point on sparse days.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns always present:
-
-        - ``start_time``
-        - ``window_end_time`` — timestamp at which the evaluation window closes
-        - ``fit_at_start``
-        - ``avg_fit_next_hour``
-        - ``min_fit_next_hour`` — lowest FIT price within the window
-        - ``max_fit_next_hour``
-        - ``fit_std_next_hour`` — standard deviation of FIT prices within the
-          window (NaN for single-sample windows)
-        - ``samples_in_window``
-
-        Columns present when the corresponding enrichment data is available:
-
-        - ``general_at_start`` — general tariff price at the window start
-        - ``fit_vs_general`` — ``fit_at_start - general_at_start``
-        - ``avg_renewables`` — mean renewables percentage over the window
-        - ``conf_low`` — time-weighted mean predicted low over the window
-        - ``conf_high`` — time-weighted mean predicted high over the window
-        - ``has_estimate`` — True if any interval in the window is a forecast
-    """
-    # --- Input validation ---
-    if not isinstance(price_table, pd.DataFrame):
-        raise TypeError("price_table must be a pandas DataFrame")
-    if "fit" not in price_table.columns:
-        raise ValueError("price_table must contain a 'fit' column")
-    if window_minutes <= 0:
-        raise ValueError("window_minutes must be a positive integer")
+):
     if top_n < 1:
         raise ValueError("top_n must be >= 1")
+    if window_minutes < 1:
+        raise ValueError("window_minutes must be a positive integer")
     if min_samples < 1:
         raise ValueError("min_samples must be >= 1")
-    if not isinstance(renewables_weight, (int, float)) or not math.isfinite(
-        renewables_weight
-    ):
+    if period not in ("morning", "daytime", "evening"):
+        raise ValueError("period must be 'morning', 'daytime', or 'evening'")
+    if not _is_finite_number(renewables_weight):
         raise ValueError("renewables_weight must be a finite number")
-    for _name, _val in [
+    for name, value in (
         ("morning_end_hour", morning_end_hour),
         ("evening_start_hour", evening_start_hour),
         ("daytime_start_hour", daytime_start_hour),
         ("daytime_end_hour", daytime_end_hour),
-    ]:
-        if not (0 <= _val <= 23):
-            raise ValueError(f"{_name} must be in [0, 23], got {_val}")
+    ):
+        if not isinstance(value, int) or not (0 <= value <= 23):
+            raise ValueError(f"{name} must be in [0, 23], got {value}")
     if morning_end_hour < 1:
         raise ValueError("morning_end_hour must be >= 1")
     if daytime_start_hour >= daytime_end_hour:
         raise ValueError(
-            f"daytime_start_hour ({daytime_start_hour}) must be less than "
-            f"daytime_end_hour ({daytime_end_hour})"
-        )
-    if period not in ("morning", "daytime", "evening"):
-        raise ValueError("period must be 'morning', 'daytime', or 'evening'")
-
-    # --- Build fit series ---
-    fit_series = (
-        pd.to_numeric(price_table["fit"], errors="coerce")
-        .dropna()
-        .sort_index()
-    )
-    if fit_series.empty:
-        return pd.DataFrame()
-
-    fit_series.index = pd.DatetimeIndex(fit_series.index)
-    fit_index = fit_series.index
-
-    # --- Period mask ---
-    if period == "morning":
-        allowed_mask = fit_index.hour < morning_end_hour
-    elif period == "evening":
-        allowed_mask = fit_index.hour >= evening_start_hour
-    else:  # daytime
-        allowed_mask = (fit_index.hour >= daytime_start_hour) & (
-            fit_index.hour < daytime_end_hour
+            f"daytime_start_hour ({daytime_start_hour}) must be less than daytime_end_hour ({daytime_end_hour})"
         )
 
-    # --- Consolidate optional enrichment series into a single dict ---
-    enrichment: dict[str, pd.Series] = {}
-    if "general" in price_table.columns:
-        enrichment["general"] = (
-            pd.to_numeric(price_table["general"], errors="coerce")
-            .reindex(fit_series.index, method="ffill")
-        )
-    if "renewables" in price_table.columns:
-        enrichment["renewables"] = (
-            pd.to_numeric(price_table["renewables"], errors="coerce")
-            .reindex(fit_series.index, method="ffill")
-        )
-    if (
-        "predicted_low" in price_table.columns
-        and "predicted_high" in price_table.columns
-    ):
-        enrichment["predicted_low"] = (
-            pd.to_numeric(price_table["predicted_low"], errors="coerce")
-            .reindex(fit_series.index, method="ffill")
-        )
-        enrichment["predicted_high"] = (
-            pd.to_numeric(price_table["predicted_high"], errors="coerce")
-            .reindex(fit_series.index, method="ffill")
-        )
-    if "is_estimate" in price_table.columns:
-        enrichment["is_estimate"] = (
-            price_table["is_estimate"]
-            .reindex(fit_series.index, method="ffill")
-            .fillna(False)
-            .astype(bool)
-        )
+    rows = _normalise_rows(price_table)
+    if not rows:
+        return WindowCandidates()
 
-    # --- Apply spike exclusion mask ---
-    if "spike_status" in price_table.columns and exclude_spike:
-        spike_series = (
-            price_table["spike_status"].reindex(fit_series.index, method="ffill")
-        )
-        if spike_series.isna().all():
-            warnings.warn(
-                "exclude_spike=True but no spike_status data aligned with fit "
-                "timestamps; spike filter was not applied.",
-                UserWarning,
-                stacklevel=2,
-            )
+    window_delta = timedelta(minutes=window_minutes)
+    candidate_rows: list[dict[str, Any]] = []
+    spike_data_seen = False
+
+    for idx, row in enumerate(rows):
+        ts = row["time"]
+        hour = ts.hour
+        if period == "morning":
+            if hour >= morning_end_hour:
+                continue
+            period_end = ts.replace(hour=morning_end_hour, minute=0, second=0, microsecond=0)
+        elif period == "evening":
+            if hour < evening_start_hour:
+                continue
+            period_end = (ts.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
         else:
-            allowed_mask = (
-                allowed_mask
-                & (spike_series != "spike")
-                & (spike_series != "potential")
-            )
+            if hour < daytime_start_hour or hour >= daytime_end_hour:
+                continue
+            period_end = ts.replace(hour=daytime_end_hour, minute=0, second=0, microsecond=0)
 
-    allowed_candidates = fit_series[allowed_mask]
-    if allowed_candidates.empty:
-        return pd.DataFrame()
+        if exclude_spike:
+            spike_status = str(row.get("spike_status", "")).strip().lower()
+            if spike_status:
+                spike_data_seen = True
+            if spike_status in ("spike", "potential"):
+                continue
 
-    # --- Pre-compute loop constants ---
-    window_duration = pd.Timedelta(minutes=window_minutes)
-    window_duration_sec = float(window_minutes * 60)
-    # Nanosecond integer offset for the window (avoids per-iteration Timedelta arithmetic)
-    window_ns = np.int64(window_minutes * 60 * 1_000_000_000)
-
-    # Pre-built nanosecond array over the full fit index for searchsorted position lookups.
-    # All enrichment series share this same index (reindexed above), so a single pair of
-    # positions covers every iloc slice in the loop.
-    fit_ns_array = fit_series.index.asi8
-
-    # Map each unique calendar date to its period-end as a nanosecond int
-    if period == "morning":
-        period_delta = pd.Timedelta(hours=morning_end_hour)
-    elif period == "evening":
-        period_delta = pd.Timedelta(days=1)  # evening ends at midnight
-    else:  # daytime
-        period_delta = pd.Timedelta(hours=daytime_end_hour)
-
-    unique_dates = allowed_candidates.index.normalize().unique()
-    period_end_ns_map: dict = {
-        d: int((d + period_delta).value) for d in unique_dates
-    }
-
-    # Pre-compute normalized dates for all candidates in one vectorised call
-    # (avoids a per-iteration scalar .normalize() allocation)
-    candidate_dates = allowed_candidates.index.normalize()
-
-    candidate_rows: list[dict] = []
-
-    for (timestamp, fit_price), period_date in zip(
-        allowed_candidates.items(), candidate_dates
-    ):
-        ts_ns_scalar = np.int64(timestamp.value)
-        window_end_ns = ts_ns_scalar + window_ns
-        period_end_ns = period_end_ns_map[period_date]
-
-        if window_end_ns > period_end_ns:
+        window_end = ts + window_delta
+        if window_end > period_end:
             continue
 
-        # Integer-position slices via searchsorted — reduces binary searches from
-        # ~10 per iteration (one per .loc call) to 2, and eliminates end_slice fencing.
-        start_pos = int(fit_ns_array.searchsorted(ts_ns_scalar))
-        end_pos = int(fit_ns_array.searchsorted(window_end_ns))  # exclusive upper bound
-
-        window_fit = fit_series.iloc[start_pos:end_pos]
-        if len(window_fit) < min_samples:
+        window_rows: list[dict[str, Any]] = []
+        j = idx
+        while j < len(rows) and rows[j]["time"] < window_end:
+            window_rows.append(rows[j])
+            j += 1
+        if len(window_rows) < min_samples:
             continue
 
-        # Time-weighted average via nanosecond arithmetic
-        ts_ns = fit_ns_array[start_pos:end_pos]
-        durations_sec = np.empty(len(ts_ns), dtype="float64")
-        if len(ts_ns) > 1:
-            durations_sec[:-1] = (ts_ns[1:] - ts_ns[:-1]) / 1e9
-        durations_sec[-1] = (window_end_ns - ts_ns[-1]) / 1e9
+        durations_sec: list[float] = []
+        for pos, win_row in enumerate(window_rows):
+            current_ts = win_row["time"]
+            next_ts = window_rows[pos + 1]["time"] if pos + 1 < len(window_rows) else window_end
+            durations_sec.append(max(0.0, (next_ts - current_ts).total_seconds()))
+        total_window_sec = max(1.0, window_delta.total_seconds())
 
-        avg_fit = (window_fit.values * durations_sec).sum() / window_duration_sec
+        fit_values = [float(win_row["fit"]) for win_row in window_rows]
+        weighted_avg_fit = sum(v * d for v, d in zip(fit_values, durations_sec)) / total_window_sec
 
-        row: dict = {
-            "start_time": timestamp,
-            "window_end_time": timestamp + window_duration,
-            "fit_at_start": float(fit_price),
-            "avg_fit_next_hour": avg_fit,
-            "min_fit_next_hour": float(window_fit.min()),
-            "max_fit_next_hour": float(window_fit.max()),
-            "fit_std_next_hour": float(window_fit.std(ddof=1)),
-            "samples_in_window": int(window_fit.shape[0]),
+        result_row: dict[str, Any] = {
+            "start_time": ts,
+            "window_end_time": window_end,
+            "fit_at_start": float(row["fit"]),
+            "avg_fit_next_hour": weighted_avg_fit,
+            "min_fit_next_hour": min(fit_values),
+            "max_fit_next_hour": max(fit_values),
+            "fit_std_next_hour": float(stdev(fit_values)) if len(fit_values) > 1 else float("nan"),
+            "samples_in_window": len(window_rows),
         }
 
-        # Enrichment: general tariff
-        if "general" in enrichment:
-            gen_val = enrichment["general"].at[timestamp]
-            if not pd.isna(gen_val):
-                row["general_at_start"] = float(gen_val)
-                row["fit_vs_general"] = float(fit_price) - float(gen_val)
+        general_value = row.get("general")
+        if _is_finite_number(general_value):
+            result_row["general_at_start"] = float(general_value)
+            result_row["fit_vs_general"] = float(row["fit"]) - float(general_value)
 
-        # Enrichment: renewables (simple mean — sampling grid is uniform after expansion)
-        if "renewables" in enrichment:
-            window_ren = enrichment["renewables"].iloc[start_pos:end_pos]
-            if not window_ren.empty:
-                avg_ren = float(window_ren.mean())
-                if not pd.isna(avg_ren):
-                    row["avg_renewables"] = avg_ren
+        renewables_values = [float(win_row["renewables"]) for win_row in window_rows if _is_finite_number(win_row.get("renewables"))]
+        if renewables_values:
+            result_row["avg_renewables"] = sum(renewables_values) / len(renewables_values)
 
-        # Enrichment: confidence interval (time-weighted, consistent with avg_fit).
-        # Guard against a length mismatch if leading NaNs survive ffill in the
-        # enrichment series — reusing durations_sec with a differently-shaped array
-        # would raise a ValueError.
-        if "predicted_low" in enrichment:
-            window_low = enrichment["predicted_low"].iloc[start_pos:end_pos]
-            window_high = enrichment["predicted_high"].iloc[start_pos:end_pos]
-            if (
-                len(window_low) == len(window_fit)
-                and not window_low.empty
-                and not window_high.empty
-            ):
-                row["conf_low"] = float(
-                    (window_low.values * durations_sec).sum() / window_duration_sec
-                )
-                row["conf_high"] = float(
-                    (window_high.values * durations_sec).sum() / window_duration_sec
-                )
+        low_values = [win_row.get("predicted_low") for win_row in window_rows]
+        high_values = [win_row.get("predicted_high") for win_row in window_rows]
+        if len(low_values) == len(window_rows) and all(_is_finite_number(v) for v in low_values):
+            result_row["conf_low"] = sum(float(v) * d for v, d in zip(low_values, durations_sec)) / total_window_sec
+        if len(high_values) == len(window_rows) and all(_is_finite_number(v) for v in high_values):
+            result_row["conf_high"] = sum(float(v) * d for v, d in zip(high_values, durations_sec)) / total_window_sec
 
-        # Enrichment: estimate flag
-        if "is_estimate" in enrichment:
-            window_est = enrichment["is_estimate"].iloc[start_pos:end_pos]
-            if not window_est.empty:
-                row["has_estimate"] = bool(np.any(window_est))
+        if any(_coerce_bool(win_row.get("is_estimate", False)) for win_row in window_rows):
+            result_row["has_estimate"] = True
 
-        # Composite score: price + renewables contribution.
-        # renewables_weight is in the same units as FIT prices per 1 % renewables,
-        # so at 100 % renewables the bonus equals renewables_weight * 100.
-        row["_composite"] = avg_fit + renewables_weight * row.get("avg_renewables", 0.0)
+        result_row["_composite"] = weighted_avg_fit + float(renewables_weight) * (result_row.get("avg_renewables", 0.0) / 100.0)
+        candidate_rows.append(result_row)
 
-        candidate_rows.append(row)
+    if exclude_spike and not spike_data_seen:
+        warnings.warn(
+            "exclude_spike=True but no spike_status data aligned with fit timestamps; spike filter was not applied.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     if not candidate_rows:
         warnings.warn(
-            f"No valid {period} export windows found "
-            f"(window_minutes={window_minutes}, min_samples={min_samples}). "
+            f"No valid {period} export windows found (window_minutes={window_minutes}, min_samples={min_samples}). "
             "Try reducing min_samples or window_minutes.",
             UserWarning,
             stacklevel=2,
         )
-        return pd.DataFrame()
+        return WindowCandidates()
 
-    result = (
-        pd.DataFrame(candidate_rows)
-        .sort_values(
-            by=["_composite", "fit_at_start", "start_time"],
-            ascending=[False, False, True],
+    candidate_rows.sort(
+        key=lambda row: (
+            -float(row["_composite"]),
+            -float(row["fit_at_start"]),
+            row["start_time"],
         )
-        .head(top_n)
-        .drop(columns=["_composite"], errors="ignore")
-        .reset_index(drop=True)
     )
-
-    # Pin column order for consistent output regardless of which enrichment
-    # columns are present
-    result = result.reindex(columns=[c for c in _COLUMN_ORDER if c in result.columns])
-
-    # Defer rounding to post-sort so only top_n rows are rounded
-    for _col, _dec in [
-        ("fit_at_start", 4),
-        ("avg_fit_next_hour", 4),
-        ("min_fit_next_hour", 4),
-        ("max_fit_next_hour", 4),
-        ("fit_std_next_hour", 4),
-        ("general_at_start", 4),
-        ("fit_vs_general", 4),
-        ("conf_low", 4),
-        ("conf_high", 4),
-        ("avg_renewables", 2),
-    ]:
-        if _col in result.columns:
-            result[_col] = result[_col].round(_dec)
-
-    return result
+    trimmed = WindowCandidates(candidate_rows[:top_n])
+    for row in trimmed:
+        row.pop("_composite", None)
+        for key, places in (
+            ("fit_at_start", 4),
+            ("avg_fit_next_hour", 4),
+            ("min_fit_next_hour", 4),
+            ("max_fit_next_hour", 4),
+            ("fit_std_next_hour", 4),
+            ("general_at_start", 4),
+            ("fit_vs_general", 4),
+            ("conf_low", 4),
+            ("conf_high", 4),
+            ("avg_renewables", 2),
+        ):
+            value = row.get(key)
+            if _is_finite_number(value):
+                row[key] = round(float(value), places)
+    return trimmed

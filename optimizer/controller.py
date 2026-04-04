@@ -5,12 +5,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
-
-import pandas as pd
 from zoneinfo import ZoneInfo
 
 from optimizer.config import AppConfig
-from optimizer.fit_export_window_analysis import get_export_window_candidates
+from optimizer.fit_export_window_analysis import WindowCandidates, get_export_window_candidates
 from optimizer.ha_client import EntityState, HAClient
 
 LOG = logging.getLogger(__name__)
@@ -182,7 +180,7 @@ class Optimizer:
         states: dict[str, EntityState],
         *,
         now: datetime,
-    ) -> pd.DataFrame:
+    ) -> list[dict[str, Any]]:
         e = self.cfg.entities
 
         def _series(entity_ids: list[str], current_entity_id: str) -> dict[datetime, float]:
@@ -200,22 +198,27 @@ class Optimizer:
 
         fit_points = _series([e.feedin_forecast_sensor, e.feedin_sensor], e.feedin_sensor)
         if not fit_points:
-            return pd.DataFrame(columns=["fit"])
+            return []
 
         general_points = _series([e.price_forecast_sensor, e.price_sensor], e.price_sensor)
         all_times = sorted(set(fit_points) | set(general_points))
-        table = pd.DataFrame(index=pd.DatetimeIndex(all_times))
-        table["fit"] = [fit_points.get(ts, float("nan")) for ts in all_times]
-        if general_points:
-            table["general"] = [general_points.get(ts, float("nan")) for ts in all_times]
-
         fit_item = states.get(e.feedin_sensor) or states.get(e.feedin_forecast_sensor)
         spike_status = ""
         if fit_item:
             spike_status = str(fit_item.attributes.get("spike_status", "") or "").strip().lower()
-        if spike_status:
-            table["spike_status"] = spike_status
-        return table.sort_index()
+        rows: list[dict[str, Any]] = []
+        for ts in all_times:
+            row: dict[str, Any] = {
+                "time": ts,
+                "fit": fit_points.get(ts, float("nan")),
+            }
+            general_value = general_points.get(ts)
+            if general_value is not None:
+                row["general"] = general_value
+            if spike_status:
+                row["spike_status"] = spike_status
+            rows.append(row)
+        return rows
 
     def _window_candidates(
         self,
@@ -230,10 +233,10 @@ class Optimizer:
         daytime_end_hour: int = 15,
         window_minutes: int = 60,
         exclude_spike: bool = False,
-    ) -> pd.DataFrame:
+    ):
         price_table = self._build_price_table(states, now=now)
-        if price_table.empty:
-            return pd.DataFrame()
+        if not price_table:
+            return WindowCandidates()
         try:
             return get_export_window_candidates(
                 price_table,
@@ -248,7 +251,7 @@ class Optimizer:
             )
         except Exception:
             LOG.exception("FIT export window analysis failed for %s", period)
-            return pd.DataFrame()
+            return WindowCandidates()
 
     def _morning_dump_window(
         self,
@@ -293,7 +296,7 @@ class Optimizer:
             window_minutes=60,
             exclude_spike=True,
         )
-        if candidates.empty:
+        if not candidates:
             return default_start, window_end
 
         for _, row in candidates.iterrows():
@@ -748,9 +751,9 @@ class Optimizer:
 
         # Solar-excess export: when the sun is up and FIT is positive, use the Solcast
         # near-term forecast to estimate how much surplus PV is available above load.
-        # This path bypasses the battery SoC floor and FIT tier/hysteresis guards —
-        # it exports free solar energy to the grid at any positive FIT rate without
-        # requiring the battery to discharge.
+        # Charging the battery takes priority, so daytime solar surplus is only treated
+        # as exportable once the battery has substantially recovered.
+        solar_excess_min_battery_soc = 90.0
         _pv_pts = self._forecast_pv_points_kw(states, e.forecast_today_sensor)
         forecast_pv_now_kw = 0.0
         if _pv_pts and is_sun_up:
@@ -774,15 +777,21 @@ class Optimizer:
         forecast_excess_kw = max(0.0, forecast_pv_now_kw - load_kw)
         solar_excess_export_kw = (
             min(effective_export_cap_kw, forecast_excess_kw)
-            if feedin_positive and not price_is_negative and is_sun_up
+            if (
+                feedin_positive
+                and not price_is_negative
+                and is_sun_up
+                and battery_soc >= solar_excess_min_battery_soc
+            )
             else 0.0
         )
         solar_excess_active = solar_excess_export_kw >= t.min_grid_transfer_kw
         LOG.debug(
             "_compute solar_excess: forecast_pv=%.2fkW pv=%.2fkW excess=%.2fkW "
-            "solar_export=%.2fkW active=%s feedin_pos=%s sun_up=%s",
+            "solar_export=%.2fkW active=%s feedin_pos=%s sun_up=%s soc=%.1f%% soc_min=%.1f%%",
             forecast_pv_now_kw, pv_kw, forecast_excess_kw,
             solar_excess_export_kw, solar_excess_active, feedin_positive, is_sun_up,
+            battery_soc, solar_excess_min_battery_soc,
         )
 
         if not can_export_price:
