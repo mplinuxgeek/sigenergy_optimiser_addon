@@ -7,6 +7,7 @@ import math
 import os
 import secrets
 import threading
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from fastapi.templating import Jinja2Templates
 
+from optimizer.config import AppConfig
 from optimizer.runtime import MemoryLogHandler, OptimizerRuntime
 
 
@@ -81,6 +83,93 @@ _event_loop: asyncio.AbstractEventLoop | None = None
 _key_entity_map: dict[str, str] = {}
 
 
+def _build_key_entity_map() -> dict[str, str]:
+    _e = RUNTIME.cfg.entities
+    return {
+        _e.battery_soc_sensor: "battery_soc",
+        _e.pv_power_sensor: "pv_power",
+        _e.consumed_power_sensor: "load_power",
+        _e.grid_export_power_sensor: "grid_export_power",
+        _e.grid_import_power_sensor: "grid_import_power",
+        _e.battery_power_sensor: "battery_power",
+        _e.price_sensor: "price",
+        _e.feedin_sensor: "feedin",
+        _e.ems_mode_select: "mode",
+        _e.grid_export_limit: "grid_export_limit",
+        _e.grid_import_limit: "grid_import_limit",
+        _e.pv_max_power_limit: "pv_max_power_limit",
+        _e.forecast_today_sensor: "forecast_today",
+        _e.forecast_tomorrow_sensor: "forecast_tomorrow",
+        _e.forecast_remaining_sensor: "forecast_remaining",
+        _e.ha_control_switch: "ha_control",
+    }
+
+
+def _refresh_key_entity_map() -> None:
+    global _key_entity_map
+    _key_entity_map = {k: v for k, v in _build_key_entity_map().items() if k}
+
+
+def _config_file_info() -> dict[str, str | int | None]:
+    path = Path(CONFIG_PATH).resolve()
+    stat = path.stat()
+    return {
+        "path": str(path),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(timespec="seconds"),
+        "size_bytes": stat.st_size,
+    }
+
+
+def _load_raw_config() -> dict[str, object]:
+    path = Path(CONFIG_PATH).resolve()
+    return {
+        **_config_file_info(),
+        "content": path.read_text(encoding="utf-8"),
+    }
+
+
+def _validate_config_content(content: str) -> dict[str, object]:
+    path = Path(CONFIG_PATH).resolve()
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".yaml",
+            prefix=f"{path.stem}.validate.",
+            dir=str(path.parent),
+            delete=False,
+        ) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        cfg = AppConfig.load(str(tmp_path))
+        cfg.validate()
+        return {
+            "ok": True,
+            "config": {
+                "home_assistant": {"url": cfg.ha_url, "token": "***"},
+                "service": cfg.service.__dict__,
+                "entities": cfg.entities.__dict__,
+                "thresholds": cfg.thresholds.__dict__,
+                "profile_overrides": cfg.profile_overrides,
+            },
+        }
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _write_config_atomic(content: str) -> dict[str, str | int | None]:
+    path = Path(CONFIG_PATH).resolve()
+    tmp_path = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(path)
+    return _config_file_info()
+
+
 def _ws_broadcast(msg: str) -> None:
     """Called from the optimizer worker thread after each cycle."""
     if _event_loop is None:
@@ -99,27 +188,7 @@ async def on_startup() -> None:
 
     # Build a map of entity_id -> logical key for all entities shown in the UI.
     # State changes to these entities are pushed to browser clients immediately.
-    _e = RUNTIME.cfg.entities
-    _key_entity_map = {
-        _e.battery_soc_sensor: "battery_soc",
-        _e.pv_power_sensor: "pv_power",
-        _e.consumed_power_sensor: "load_power",
-        _e.grid_export_power_sensor: "grid_export_power",
-        _e.grid_import_power_sensor: "grid_import_power",
-        _e.battery_power_sensor: "battery_power",
-        _e.price_sensor: "price",
-        _e.feedin_sensor: "feedin",
-        _e.ems_mode_select: "mode",
-        _e.grid_export_limit: "grid_export_limit",
-        _e.grid_import_limit: "grid_import_limit",
-        _e.pv_max_power_limit: "pv_max_power_limit",
-        _e.forecast_today_sensor: "forecast_today",
-        _e.forecast_tomorrow_sensor: "forecast_tomorrow",
-        _e.forecast_remaining_sensor: "forecast_remaining",
-        _e.ha_control_switch: "ha_control",
-    }
-    # Drop entries whose entity ID is blank (unconfigured optional entities).
-    _key_entity_map = {k: v for k, v in _key_entity_map.items() if k}
+    _refresh_key_entity_map()
 
     def _on_ha_state(entity_id: str, state: str, attributes: dict) -> None:
         key = _key_entity_map.get(entity_id)
@@ -311,6 +380,63 @@ async def api_control_ess(request: Request) -> JSONResponse:
 @app.get("/api/config")
 def api_config() -> JSONResponse:
     return JSONResponse(RUNTIME.public_config())
+
+
+@app.get("/api/config/raw")
+def api_config_raw() -> JSONResponse:
+    try:
+        return JSONResponse({"ok": True, **_load_raw_config()})
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Failed reading raw config")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/config/validate", dependencies=_AUTH)
+async def api_config_validate(request: Request) -> JSONResponse:
+    body = await request.json()
+    content = body.get("content")
+    if not isinstance(content, str):
+        return JSONResponse({"ok": False, "error": "content must be a string"}, status_code=400)
+    try:
+        result = await asyncio.to_thread(lambda: _validate_config_content(content))
+        return JSONResponse(result)
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Config validation failed")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/config/save", dependencies=_AUTH)
+async def api_config_save(request: Request) -> JSONResponse:
+    body = await request.json()
+    content = body.get("content")
+    if not isinstance(content, str):
+        return JSONResponse({"ok": False, "error": "content must be a string"}, status_code=400)
+    logging.getLogger(__name__).info("Human input: /api/config/save")
+    try:
+        await asyncio.to_thread(lambda: _validate_config_content(content))
+        file_info = await asyncio.to_thread(lambda: _write_config_atomic(content))
+        restart_required = False
+        warning = ""
+        try:
+            reload_result = await asyncio.to_thread(lambda: RUNTIME.reload_config_from_disk(source="human_api"))
+            _refresh_key_entity_map()
+        except ValueError as exc:
+            reload_result = None
+            restart_required = True
+            warning = str(exc)
+        return JSONResponse({
+            "ok": True,
+            "saved": True,
+            "restart_required": restart_required,
+            "warning": warning,
+            "file": file_info,
+            "config": RUNTIME.public_config(),
+            "runtime": RUNTIME.status(),
+            "reload": reload_result,
+        })
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Config save failed")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 @app.get("/api/prices")

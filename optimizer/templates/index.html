@@ -165,6 +165,49 @@
     .earn-card .v { font-size: 1.25rem; font-weight: 800; }
     .earn-card.positive .v { color: #047857; }
     .earn-card.negative .v { color: #b91c1c; }
+    .config-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; }
+    .config-pane, .config-side { border: 1px solid var(--line); border-radius: 12px; background: #fcfefe; padding: 12px; }
+    .config-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    .config-title { font-size: 0.95rem; font-weight: 700; }
+    .config-meta { font-size: 0.78rem; color: var(--muted); }
+    .config-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .editor-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #f7fbfa; }
+    .editor-bar { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: #eef6f3; font-size: 0.78rem; color: var(--muted); }
+    .config-editor {
+      width: 100%;
+      min-height: 60vh;
+      resize: vertical;
+      border: 0;
+      outline: none;
+      padding: 12px;
+      box-sizing: border-box;
+      background: #fdfefe;
+      color: var(--ink);
+      font-family: "JetBrains Mono", "Consolas", monospace;
+      font-size: 0.84rem;
+      line-height: 1.5;
+      tab-size: 2;
+    }
+    .config-status { margin-top: 10px; min-height: 1.3em; font-size: 0.88rem; color: var(--muted); }
+    .config-status.err { color: var(--err); }
+    .config-status.ok { color: #0b5b48; }
+    .config-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      background: white;
+      color: var(--muted);
+    }
+    .config-badge.dirty { background: #fff7ed; border-color: #fdba74; color: #9a3412; }
+    .config-badge.saved { background: var(--accent-soft); border-color: #a9dcca; color: #0b5b48; }
+    .config-side h3 { margin: 0 0 10px 0; font-size: 0.95rem; }
+    .config-side-list { display: grid; gap: 8px; font-size: 0.84rem; }
+    .config-side-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: white; }
+    .config-side-item .k { margin-bottom: 2px; }
     .earnings-table-wrap { overflow-x: auto; margin-top: 4px; }
     .earnings-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
     .earnings-table th { background: #f0f7f5; font-weight: 700; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 10px; border-bottom: 2px solid var(--line); }
@@ -185,6 +228,7 @@
     th, td { border-bottom: 1px solid var(--line); text-align: left; padding: 7px; vertical-align: top; }
     @media (max-width: 920px) {
       .overview-layout { grid-template-columns: 1fr; }
+      .config-layout { grid-template-columns: 1fr; }
     }
     /* Live-value flash: briefly highlight a card value when it changes via WebSocket */
     @keyframes liveFlash {
@@ -414,7 +458,48 @@
       </table>
     </section>
 
-    <section class="panel" id="tab-config"><div class="mono" id="config-json"></div></section>
+    <section class="panel" id="tab-config">
+      <div class="config-layout">
+        <div class="config-pane">
+          <div class="config-head">
+            <div>
+              <div class="config-title">Config Editor</div>
+              <div class="config-meta" id="config-meta">Loading config file…</div>
+            </div>
+            <div class="config-actions">
+              <button class="btn secondary" id="config-reload">Reload</button>
+              <button class="btn secondary" id="config-validate">Validate</button>
+              <button class="btn" id="config-save">Save</button>
+            </div>
+          </div>
+          <div class="editor-wrap">
+            <div class="editor-bar">
+              <span id="config-path">config.yaml</span>
+              <span id="config-dirty-badge" class="config-badge">Saved</span>
+            </div>
+            <textarea id="config-editor" class="config-editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+          </div>
+          <div id="config-status" class="config-status"></div>
+        </div>
+        <aside class="config-side">
+          <h3>Editor Notes</h3>
+          <div class="config-side-list">
+            <div class="config-side-item">
+              <div class="k">Save behavior</div>
+              <div>Edits are validated before write. Successful saves reload the live runtime when possible.</div>
+            </div>
+            <div class="config-side-item">
+              <div class="k">Restart boundary</div>
+              <div>Changes to `home_assistant.url` or `home_assistant.token` are saved, but still require a service restart.</div>
+            </div>
+            <div class="config-side-item">
+              <div class="k">Shortcut</div>
+              <div>Use `Ctrl+S` or `Cmd+S` inside the editor to save.</div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
     <section class="panel" id="tab-logs"><div class="mono" id="logs-text"></div></section>
   </div>
 
@@ -434,6 +519,10 @@
     let simulationComparison = null;
     let simulationEnabled = false;
     let simulationInFlight = false;
+    let configEditorDirty = false;
+    let configEditorBusy = false;
+    let configLastSavedContent = '';
+    let configLastModifiedAt = '';
     const SIMULATION_PASSES = 8;
 
     function asText(v) {
@@ -612,6 +701,21 @@
           await applyAlgorithmTuning(tuning);
         });
       });
+    }
+
+    function setConfigDirty(dirty) {
+      configEditorDirty = !!dirty;
+      const badge = document.getElementById('config-dirty-badge');
+      if (!badge) return;
+      badge.className = `config-badge ${dirty ? 'dirty' : 'saved'}`;
+      badge.textContent = dirty ? 'Unsaved' : 'Saved';
+    }
+
+    function setConfigStatus(message, tone = '') {
+      const el = document.getElementById('config-status');
+      if (!el) return;
+      el.className = `config-status${tone ? ` ${tone}` : ''}`;
+      el.textContent = message || '';
     }
 
     tabs.forEach(btn => {
@@ -1670,9 +1774,20 @@
     }
 
     async function refreshConfig() {
-      const r = await fetch(appPath('/api/config'));
+      if (configEditorDirty || configEditorBusy) return;
+      const r = await fetch(appPath('/api/config/raw'));
       const data = await r.json();
-      document.getElementById('config-json').textContent = JSON.stringify(data, null, 2);
+      if (!r.ok || !data.ok) {
+        throw new Error(data.error || 'failed to load config');
+      }
+      const editor = document.getElementById('config-editor');
+      editor.value = data.content || '';
+      configLastSavedContent = editor.value;
+      configLastModifiedAt = data.modified_at || '';
+      setConfigDirty(false);
+      document.getElementById('config-path').textContent = data.path || 'config.yaml';
+      document.getElementById('config-meta').textContent = `Modified ${data.modified_at || '-'} · ${data.size_bytes ?? 0} bytes`;
+      setConfigStatus('');
     }
 
     async function refreshLogs() {
@@ -1784,15 +1899,9 @@
       const data = await res.json();
       if (res.ok) {
         setAlgorithmTuningUi(tuning);
-        if ((data.controls?.control_mode || '') === 'automated') {
-          const cycleRes = await fetch(appPath('/api/force-cycle'), { method: 'POST' });
-          const cycleData = await cycleRes.json();
-          document.getElementById('controls-status').textContent = cycleRes.ok
-            ? `Algorithm tuning set to ${tuning.replace('_', ' ')} and cycle started`
-            : `Algorithm tuning set to ${tuning.replace('_', ' ')}, but cycle failed: ${cycleData.error || 'unknown error'}`;
-        } else {
-          document.getElementById('controls-status').textContent = `Algorithm tuning set to ${tuning.replace('_', ' ')}`;
-        }
+        document.getElementById('controls-status').textContent = data.cycle_started
+          ? `Algorithm tuning set to ${tuning.replace('_', ' ')} and cycle started`
+          : `Algorithm tuning set to ${tuning.replace('_', ' ')}`;
         await refreshAll();
         return;
       }
@@ -1992,6 +2101,26 @@
     }
 
     document.getElementById('export-csv').addEventListener('click', exportToCSV);
+    document.getElementById('config-editor').addEventListener('input', () => {
+      const editor = document.getElementById('config-editor');
+      setConfigDirty(editor.value !== configLastSavedContent);
+    });
+    document.getElementById('config-editor').addEventListener('keydown', async (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
+        ev.preventDefault();
+        await saveConfig();
+      }
+    });
+    document.getElementById('config-reload').addEventListener('click', async () => {
+      if (configEditorDirty && !window.confirm('Discard unsaved config changes and reload from disk?')) return;
+      await refreshConfig();
+    });
+    document.getElementById('config-validate').addEventListener('click', async () => {
+      await validateConfigEditor();
+    });
+    document.getElementById('config-save').addEventListener('click', async () => {
+      await saveConfig();
+    });
 
     document.getElementById('sig-mode').addEventListener('change', async (ev) => {
       if (!ev.isTrusted || hydratingControls || Date.now() < suppressControlChangesUntil || essApplyInFlight) return;
@@ -2040,6 +2169,65 @@
     if (gridSvg) {
       gridSvg.addEventListener('mousemove', handleGridHover);
       gridSvg.addEventListener('mouseleave', clearGridHover);
+    }
+
+    async function validateConfigEditor() {
+      const editor = document.getElementById('config-editor');
+      configEditorBusy = true;
+      setConfigStatus('Validating config…');
+      try {
+        const res = await fetch(appPath('/api/config/validate'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: editor.value }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setConfigStatus(`Validation failed: ${data.error || 'unknown error'}`, 'err');
+          return false;
+        }
+        setConfigStatus('Config is valid.', 'ok');
+        return true;
+      } catch (e) {
+        setConfigStatus(`Validation error: ${e}`, 'err');
+        return false;
+      } finally {
+        configEditorBusy = false;
+      }
+    }
+
+    async function saveConfig() {
+      const editor = document.getElementById('config-editor');
+      if (configEditorBusy) return false;
+      configEditorBusy = true;
+      setConfigStatus('Saving config…');
+      try {
+        const res = await fetch(appPath('/api/config/save'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: editor.value }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setConfigStatus(`Save failed: ${data.error || 'unknown error'}`, 'err');
+          return false;
+        }
+        configLastSavedContent = editor.value;
+        configLastModifiedAt = data.file?.modified_at || configLastModifiedAt;
+        setConfigDirty(false);
+        document.getElementById('config-meta').textContent = `Modified ${data.file?.modified_at || '-'} · ${data.file?.size_bytes ?? 0} bytes`;
+        const msg = data.restart_required
+          ? `Config saved. ${data.warning || 'Restart required for HA connection changes.'}`
+          : 'Config saved and runtime reloaded.';
+        setConfigStatus(msg, data.restart_required ? '' : 'ok');
+        await Promise.all([refreshStatus(), refreshControls(), refreshLogs()]);
+        return true;
+      } catch (e) {
+        setConfigStatus(`Save error: ${e}`, 'err');
+        return false;
+      } finally {
+        configEditorBusy = false;
+      }
     }
 
     refreshAll();

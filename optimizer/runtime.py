@@ -1218,6 +1218,39 @@ class OptimizerRuntime:
             "algorithm_tuning": self.algorithm_tuning,
         }
 
+    def reload_config_from_disk(self, *, source: str = "api") -> dict[str, Any]:
+        """Reload config.yaml into the live runtime.
+
+        HA connection changes are intentionally rejected for live reload because
+        the current websocket/session lifecycle is bound to the existing client.
+        Those edits are still valid on disk, but they require a process restart.
+        """
+        LOG.info("Action trigger (%s): reload_config_from_disk", source)
+        new_cfg = AppConfig.load(self.config_path)
+        new_cfg.validate()
+
+        with self._lock:
+            if new_cfg.ha_url != self.cfg.ha_url or new_cfg.ha_token != self.cfg.ha_token:
+                raise ValueError(
+                    "Config saved, but home_assistant.url/token changes require a service restart"
+                )
+            self.cfg = new_cfg
+            self.poll_seconds = max(5, int(self.cfg.service.poll_seconds))
+            self._config_midnight_reserve_floor = float(self.cfg.thresholds.midnight_reserve_soc)
+            self._base_thresholds = deepcopy(self.cfg.thresholds.__dict__)
+            self.optimizer = Optimizer(self.cfg, self.client, timezone=self.timezone)
+            self._refresh_effective_thresholds()
+            self._sim_cache_block = None
+            self._sim_cache_result = None
+            self._last_soc_int = None
+            self.last_reload = self._now()
+            self._last_reload_dt = datetime.now(self.tz)
+
+        return {
+            "status": self.status(),
+            "config": self.public_config(),
+        }
+
     def _apply_threshold_params(self, params: dict[str, Any]) -> None:
         for key, value in params.items():
             if key in self._base_thresholds:
@@ -1440,18 +1473,27 @@ class OptimizerRuntime:
         tuning = (tuning or "").strip().lower()
         if tuning not in ALGORITHM_TUNINGS:
             raise ValueError(f"Unsupported algorithm tuning: {tuning}")
+        should_force_cycle = False
         with self._lock:
             previous = self.algorithm_tuning
             self.algorithm_tuning = tuning
             self._refresh_effective_thresholds()
             self._sim_cache_block = None
+            should_force_cycle = self.control_mode == "automated"
         LOG.info("Action trigger (%s): set_algorithm_tuning %s -> %s", source, previous, tuning)
         self._persist_algorithm_tuning(tuning)
-        return {
+        result = {
             "algorithm_tuning": self.algorithm_tuning,
             "thresholds": deepcopy(self.cfg.thresholds.__dict__),
             "base_thresholds": deepcopy(self._base_thresholds),
         }
+        if should_force_cycle:
+            cycle_status = self.force_cycle(source=f"{source}_tuning_change")
+            result["runtime"] = cycle_status
+            result["cycle_started"] = True
+        else:
+            result["cycle_started"] = False
+        return result
 
     def _restore_daily_tuning_for_today(self) -> None:
         try:

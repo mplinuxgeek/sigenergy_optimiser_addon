@@ -2,7 +2,7 @@ home_assistant:
   url: ""
   token: ""
 service:
-  poll_seconds: 20
+  poll_seconds: 60
   notification_service: notify.home_users
   notify_daily_summary: true
   daily_summary_time: '23:55'

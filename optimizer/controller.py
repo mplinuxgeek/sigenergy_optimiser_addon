@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+import pandas as pd
 from zoneinfo import ZoneInfo
 
 from optimizer.config import AppConfig
+from optimizer.fit_export_window_analysis import get_export_window_candidates
 from optimizer.ha_client import EntityState, HAClient
 
 LOG = logging.getLogger(__name__)
@@ -161,22 +163,98 @@ class Optimizer:
         out.sort(key=lambda x: x[0])
         return out
 
-    def _avg_price_in_window(
-        self,
-        points: list[tuple[datetime, float]],
-        *,
-        start: datetime,
-        end: datetime,
-    ) -> float | None:
-        vals = [v for ts, v in points if ts >= start and ts < end]
-        if not vals:
+    def _to_local_naive(self, ts: datetime) -> datetime:
+        return ts.astimezone(self.tz).replace(tzinfo=None)
+
+    def _to_local_aware(self, ts: Any) -> datetime | None:
+        if ts is None:
             return None
-        return sum(vals) / len(vals)
+        if hasattr(ts, "to_pydatetime"):
+            ts = ts.to_pydatetime()
+        if not isinstance(ts, datetime):
+            return None
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=self.tz)
+        return ts.astimezone(self.tz)
+
+    def _build_price_table(
+        self,
+        states: dict[str, EntityState],
+        *,
+        now: datetime,
+    ) -> pd.DataFrame:
+        e = self.cfg.entities
+
+        def _series(entity_ids: list[str], current_entity_id: str) -> dict[datetime, float]:
+            out: dict[datetime, float] = {}
+            for ts, value in self._forecast_price_points(states, entity_ids):
+                local_ts = self._to_local_naive(ts)
+                if local_ts.date() != now.date():
+                    continue
+                out[local_ts] = float(value)
+            current_item = states.get(current_entity_id)
+            current_value = _to_float(current_item.state if current_item else None, float("nan"))
+            if current_value == current_value:
+                out[self._to_local_naive(now)] = float(current_value)
+            return out
+
+        fit_points = _series([e.feedin_forecast_sensor, e.feedin_sensor], e.feedin_sensor)
+        if not fit_points:
+            return pd.DataFrame(columns=["fit"])
+
+        general_points = _series([e.price_forecast_sensor, e.price_sensor], e.price_sensor)
+        all_times = sorted(set(fit_points) | set(general_points))
+        table = pd.DataFrame(index=pd.DatetimeIndex(all_times))
+        table["fit"] = [fit_points.get(ts, float("nan")) for ts in all_times]
+        if general_points:
+            table["general"] = [general_points.get(ts, float("nan")) for ts in all_times]
+
+        fit_item = states.get(e.feedin_sensor) or states.get(e.feedin_forecast_sensor)
+        spike_status = ""
+        if fit_item:
+            spike_status = str(fit_item.attributes.get("spike_status", "") or "").strip().lower()
+        if spike_status:
+            table["spike_status"] = spike_status
+        return table.sort_index()
+
+    def _window_candidates(
+        self,
+        states: dict[str, EntityState],
+        *,
+        now: datetime,
+        period: str,
+        top_n: int = 10,
+        morning_end_hour: int = 9,
+        evening_start_hour: int = 19,
+        daytime_start_hour: int = 9,
+        daytime_end_hour: int = 15,
+        window_minutes: int = 60,
+        exclude_spike: bool = False,
+    ) -> pd.DataFrame:
+        price_table = self._build_price_table(states, now=now)
+        if price_table.empty:
+            return pd.DataFrame()
+        try:
+            return get_export_window_candidates(
+                price_table,
+                period=period,
+                top_n=top_n,
+                morning_end_hour=morning_end_hour,
+                evening_start_hour=evening_start_hour,
+                daytime_start_hour=daytime_start_hour,
+                daytime_end_hour=daytime_end_hour,
+                window_minutes=window_minutes,
+                exclude_spike=exclude_spike,
+            )
+        except Exception:
+            LOG.exception("FIT export window analysis failed for %s", period)
+            return pd.DataFrame()
 
     def _morning_dump_window(
         self,
         states: dict[str, EntityState],
         *,
+        now: datetime,
         next_rising: datetime | None,
         preferred_hours: float,
         target_duration_h: float,
@@ -199,47 +277,32 @@ class Optimizer:
         if earliest_start >= latest_start:
             return default_start, window_end
 
-        forecast_points = self._forecast_price_points(
-            states,
-            [self.cfg.entities.feedin_forecast_sensor, self.cfg.entities.feedin_sensor],
+        analysis_morning_end_hour = max(
+            1,
+            min(
+                23,
+                window_end.hour + (1 if (window_end.minute or window_end.second or window_end.microsecond) else 0),
+            ),
         )
-        if not forecast_points:
+        candidates = self._window_candidates(
+            states,
+            now=now,
+            period="morning",
+            top_n=20,
+            morning_end_hour=analysis_morning_end_hour,
+            window_minutes=60,
+            exclude_spike=True,
+        )
+        if candidates.empty:
             return default_start, window_end
 
-        # Candidate starts from forecast timestamps in the search band + default.
-        candidates: list[datetime] = [default_start]
-        for ts, _ in forecast_points:
-            if ts < earliest_start or ts > latest_start:
+        for _, row in candidates.iterrows():
+            start_dt = self._to_local_aware(row.get("start_time"))
+            if start_dt is None:
                 continue
-            candidates.append(ts)
-        candidates = sorted(set(candidates))
-        if not candidates:
-            return default_start, window_end
-
-        best_start = default_start
-        best_score = float("-inf")
-
-        for c in candidates:
-            c_end = c + timedelta(hours=duration_h)
-            if c_end > window_end:
-                continue
-            # Variable-duration strategy:
-            # evaluate the mean FIT over a duration sized from available energy.
-            avg = self._avg_price_in_window(forecast_points, start=c, end=c_end)
-            if avg is None:
-                continue
-            # Prefer better price, but bias towards later (closer-to-sunrise) starts.
-            closeness_h = max(0.0, (c - earliest_start).total_seconds() / 3600.0)
-            score = avg + closeness_h * 0.0015
-            if score > best_score + 0.0001:
-                best_score = score
-                best_start = c
-                continue
-            # Tie-breaker: stay closer to sunrise.
-            if abs(score - best_score) <= 0.0005 and c > best_start:
-                best_start = c
-
-        return best_start, window_end
+            if earliest_start <= start_dt <= latest_start:
+                return start_dt, window_end
+        return default_start, window_end
 
     def _hours_until_pv_exceeds_load(
         self,
@@ -605,6 +668,7 @@ class Optimizer:
         )
         dump_start, dump_end = self._morning_dump_window(
             states,
+            now=now,
             next_rising=next_rising,
             preferred_hours=max(0.5, t.morning_dump_hours_before_sunrise),
             target_duration_h=target_dump_duration_h,
@@ -640,6 +704,7 @@ class Optimizer:
         # instead of immediately re-arming the midnight reserve and lookahead
         # hold. This is intentionally narrow to the market-arbitrage profile.
         morning_dump_continuation_active = False
+        best_morning_candidate_start: datetime | None = None
         if (
             t.morning_dump_enabled
             and t.forced_export_on_spike_enabled
@@ -652,30 +717,25 @@ class Optimizer:
             and feedin_positive
             and not price_is_negative
         ):
-            _peak_window_end = now.replace(
-                hour=t.late_morning_hour,
-                minute=0,
-                second=0,
-                microsecond=0,
-            )
-            if _peak_window_end <= now:
-                _peak_window_end = now + timedelta(hours=1)
-            _morning_price_points = self._forecast_price_points(
+            _morning_candidates = self._window_candidates(
                 states,
-                [e.feedin_forecast_sensor, e.feedin_sensor],
+                now=now,
+                period="morning",
+                top_n=10,
+                morning_end_hour=max(1, min(23, t.late_morning_hour)),
+                window_minutes=60,
+                exclude_spike=True,
             )
-            _future_morning_prices = [
-                v for ts_l, v in _morning_price_points
-                if ts_l > now and ts_l <= _peak_window_end
-            ]
-            _future_morning_max = max(_future_morning_prices, default=0.0)
-            _event_peak_price = max(feedin_price, _future_morning_max)
-            _future_peak_pending = _future_morning_max > feedin_price + 0.001
-            _at_event_peak = (
-                _event_peak_price > 0
-                and feedin_price >= _event_peak_price * max(0.5, t.afternoon_lookahead_min_fraction)
-            )
-            morning_dump_continuation_active = _future_peak_pending or _at_event_peak
+            for _, row in _morning_candidates.iterrows():
+                start_dt = self._to_local_aware(row.get("start_time"))
+                end_dt = self._to_local_aware(row.get("window_end_time"))
+                if start_dt is None or end_dt is None or dump_end is None:
+                    continue
+                if end_dt <= dump_end:
+                    continue
+                best_morning_candidate_start = start_dt
+                morning_dump_continuation_active = now < end_dt
+                break
         morning_event_export_active = morning_dump_active or morning_dump_continuation_active
         post_morning_dump_hold_active = (
             t.morning_dump_enabled
@@ -782,7 +842,15 @@ class Optimizer:
             if morning_dump_active:
                 export_reason = f"Morning dump export {desired_export:.1f}kW to floor {morning_dump_floor_soc:.1f}%"
             elif morning_dump_continuation_active:
-                export_reason = f"Morning peak continuation {desired_export:.1f}kW to floor {morning_dump_floor_soc:.1f}%"
+                _target_label = (
+                    best_morning_candidate_start.strftime("%H:%M")
+                    if best_morning_candidate_start is not None
+                    else "best window"
+                )
+                export_reason = (
+                    f"Morning peak continuation {desired_export:.1f}kW "
+                    f"toward {_target_label} to floor {morning_dump_floor_soc:.1f}%"
+                )
             elif post_morning_dump_hold_active:
                 export_reason = f"Post-morning-dump hold {desired_export:.1f}kW until FIT turns negative"
             elif solar_excess_active and export_tier == 0.0:
@@ -812,25 +880,39 @@ class Optimizer:
         if (
             desired_export > 0
             and not morning_event_export_active
-            and t.afternoon_lookahead_hours > 0
-            and t.afternoon_lookahead_ratio > 1.0
             and feedin_price > 0
         ):
-            _look_pts = self._forecast_price_points(
-                states, [e.feedin_forecast_sensor, e.feedin_sensor]
+            _daytime_candidates = self._window_candidates(
+                states,
+                now=now,
+                period="daytime",
+                top_n=10,
+                daytime_start_hour=9,
+                daytime_end_hour=15,
+                window_minutes=60,
+                exclude_spike=True,
             )
-            _look_end = now + timedelta(hours=t.afternoon_lookahead_hours)
-            _future_feedin = [v for ts_l, v in _look_pts if ts_l > now and ts_l <= _look_end]
-            if _future_feedin:
-                _future_max = max(_future_feedin)
-                # Ratio check: hold for very large relative improvements (e.g. 1c→5c)
-                _ratio_hold = _future_max > feedin_price * t.afternoon_lookahead_ratio
-                # Fraction check: hold until current feedin is within min_fraction of the
-                # upcoming peak — releases only when we're near the best price in the window.
+            _future_target = 0.0
+            _future_start: datetime | None = None
+            for _, row in _daytime_candidates.iterrows():
+                start_dt = self._to_local_aware(row.get("start_time"))
+                if start_dt is None or start_dt <= now:
+                    continue
+                _future_start = start_dt
+                _future_target = max(
+                    float(row.get("avg_fit_next_hour", 0.0) or 0.0),
+                    float(row.get("fit_at_start", 0.0) or 0.0),
+                )
+                break
+            if _future_target > 0 and _future_start is not None:
+                _ratio_hold = (
+                    t.afternoon_lookahead_hours > 0
+                    and t.afternoon_lookahead_ratio > 1.0
+                    and _future_target > feedin_price * t.afternoon_lookahead_ratio
+                )
                 _fraction_hold = (
                     t.afternoon_lookahead_min_fraction > 0
-                    and _future_max > 0
-                    and feedin_price < _future_max * t.afternoon_lookahead_min_fraction
+                    and feedin_price < _future_target * t.afternoon_lookahead_min_fraction
                 )
                 if _ratio_hold or _fraction_hold:
                     # Cap to solar surplus only — don't draw down the battery
@@ -839,12 +921,12 @@ class Optimizer:
                         _solar_only = 0.0
                     if _solar_only < desired_export - 0.01:
                         LOG.debug(
-                            "_compute lookahead: holding battery export "
-                            "(feedin=%.4f future_max=%.4f ratio=%.1fx threshold=%.1fx "
-                            "min_fraction=%.3f ratio_hold=%s fraction_hold=%s)"
-                            " export %.1f→%.1fkW",
-                            feedin_price, _future_max,
-                            _future_max / feedin_price if feedin_price > 0 else 0,
+                            "_compute lookahead: holding battery export via daytime candidate "
+                            "(feedin=%.4f target=%.4f start=%s ratio=%.1fx threshold=%.1fx "
+                            "min_fraction=%.3f ratio_hold=%s fraction_hold=%s) export %.1f→%.1fkW",
+                            feedin_price, _future_target,
+                            _future_start.strftime("%H:%M"),
+                            _future_target / feedin_price if feedin_price > 0 else 0,
                             t.afternoon_lookahead_ratio,
                             t.afternoon_lookahead_min_fraction,
                             _ratio_hold, _fraction_hold,
@@ -852,8 +934,8 @@ class Optimizer:
                         )
                         desired_export = _solar_only
                         export_reason = (
-                            f"Export held for {_future_max * 100:.0f}c "
-                            f"(now {feedin_price * 100:.0f}c)"
+                            f"Export held for {_future_target * 100:.0f}c daytime window "
+                            f"at {_future_start.strftime('%H:%M')} (now {feedin_price * 100:.0f}c)"
                         )
 
         # ---------------------------------------------------------------
@@ -870,12 +952,30 @@ class Optimizer:
             and t.forecast_hold_start_hour <= now.hour < t.forecast_hold_end_hour
             and not morning_event_export_active
         ):
-            _fh_pts = self._forecast_price_points(states, [e.feedin_forecast_sensor, e.feedin_sensor])
-            _fh_upcoming = [v for ts_l, v in _fh_pts if ts_l > now and v >= t.forecast_hold_price_threshold]
-            if _fh_upcoming:
-                _forecast_hold_active = True
-                _forecast_hold_max_price = max(_fh_upcoming)
-                LOG.debug("_compute forecast_hold: active=True max_price=%.4f", _forecast_hold_max_price)
+            _evening_candidates = self._window_candidates(
+                states,
+                now=now,
+                period="evening",
+                top_n=5,
+                evening_start_hour=19,
+                window_minutes=60,
+                exclude_spike=True,
+            )
+            for _, row in _evening_candidates.iterrows():
+                start_dt = self._to_local_aware(row.get("start_time"))
+                if start_dt is None or start_dt <= now:
+                    continue
+                _forecast_hold_max_price = max(
+                    float(row.get("avg_fit_next_hour", 0.0) or 0.0),
+                    float(row.get("fit_at_start", 0.0) or 0.0),
+                )
+                if _forecast_hold_max_price >= t.forecast_hold_price_threshold:
+                    _forecast_hold_active = True
+                    LOG.debug(
+                        "_compute forecast_hold: active=True start=%s target=%.4f",
+                        start_dt.strftime("%H:%M"), _forecast_hold_max_price,
+                    )
+                break
 
         # --- Max Profits: forced max export on price spike ---
         # When the feed-in tariff hits the spike threshold, export at full inverter
