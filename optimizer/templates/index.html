@@ -115,6 +115,16 @@
       opacity: 0.45;
       cursor: not-allowed;
     }
+    .seg-btn-wide { width: 100%; margin-top: 6px; }
+    .auto-profile-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 8px; }
+    .auto-profile-label { font-size: 0.84rem; color: var(--muted); flex: 1; }
+    .auto-profile-status { font-size: 0.78rem; color: var(--muted); margin-top: 4px; min-height: 1.1em; text-align: center; }
+    .pill-toggle { position: relative; display: inline-block; width: 38px; height: 22px; flex-shrink: 0; }
+    .pill-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .pill-track { position: absolute; inset: 0; background: var(--line); border-radius: 11px; cursor: pointer; transition: background 0.2s; }
+    .pill-track::after { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: transform 0.2s; }
+    .pill-toggle input:checked + .pill-track { background: var(--accent); }
+    .pill-toggle input:checked + .pill-track::after { transform: translateX(16px); }
     .hint { color: var(--muted); font-size: 0.8rem; line-height: 1.35; }
     .header-actions { display: flex; flex-direction: row; align-items: center; gap: 8px; }
     .sim-summary {
@@ -153,7 +163,7 @@
     .status { margin-top: 8px; color: var(--muted); font-size: 0.88rem; }
     .err { color: var(--err); }
     .controls-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
-    .overview-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(220px, 300px); gap: 12px; align-items: start; }
+    .overview-layout { display: grid; grid-template-columns: minmax(253px, 345px) minmax(0, 1fr) minmax(253px, 345px); gap: 12px; align-items: start; }
     .controls-pane .controls-grid { grid-template-columns: 1fr; }
     .data-pane { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
     .summary-pane { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
@@ -335,12 +345,23 @@
 
             <div class="group">
               <h3>Algorithm Tuning</h3>
-              <div class="segmented" id="algorithm-tuning">
-                <button class="seg-btn" type="button" data-tuning="max_consumption">Max Consumption</button>
-                <button class="seg-btn active" type="button" data-tuning="balanced">Balanced</button>
-                <button class="seg-btn" type="button" data-tuning="max_profits">Max Profits</button>
+              <div class="auto-profile-row">
+                <span class="auto-profile-label">Auto-select based on Solcast daily forecast</span>
+                <label class="pill-toggle">
+                  <input type="checkbox" id="auto-profile-toggle" checked>
+                  <span class="pill-track"></span>
+                </label>
               </div>
-              <div class="hint" style="margin-top:8px">Balanced attempts to balance self consumption with profits. Max Consumption holds more energy back for the home. Max Profits exports and imports more aggressively.</div>
+              <div id="algorithm-tuning">
+                <div class="segmented">
+                  <button class="seg-btn" type="button" data-tuning="max_consumption">Max Consumption</button>
+                  <button class="seg-btn active" type="button" data-tuning="balanced">Balanced</button>
+                  <button class="seg-btn" type="button" data-tuning="max_profits">Max Profits</button>
+                </div>
+                <button class="seg-btn seg-btn-wide" type="button" data-tuning="no_exports">No Exports</button>
+              </div>
+              <div class="auto-profile-status" id="auto-profile-status"></div>
+              <div class="hint" style="margin-top:8px">Balanced mode balances self consumption with profits. Max Consumption holds more energy for the home. Max Profits exports more aggressively. No Exports blocks all grid exports.</div>
             </div>
 
             <div class="group">
@@ -675,6 +696,7 @@
     function tuningLabel(tuning) {
       if (tuning === 'max_consumption') return 'Max Consumption';
       if (tuning === 'max_profits') return 'Max Profits';
+      if (tuning === 'no_exports') return 'No Exports';
       return 'Balanced';
     }
 
@@ -1927,6 +1949,15 @@
         }
         setAlgorithmTuningUi(data.algorithm_tuning || 'balanced');
         if (simulationComparison) renderSimulationComparison({ ...simulationComparison, current_tuning: data.algorithm_tuning || 'balanced' });
+        const autoToggle = document.getElementById('auto-profile-toggle');
+        if (autoToggle) autoToggle.checked = !!data.auto_profile_enabled;
+        const autoStatus = document.getElementById('auto-profile-status');
+        if (autoStatus) {
+          const s = data.auto_profile_summary;
+          autoStatus.textContent = s
+            ? `Today (${s.forecast_kwh} kWh forecast) → ${tuningLabel(s.profile)}`
+            : (data.auto_profile_enabled ? 'Will apply on next cycle' : 'Disabled — profile set manually');
+        }
 
         const emsSelect = document.getElementById('ems-mode');
         const options = ess.ems_mode_options || [];
@@ -2205,6 +2236,25 @@
 
     document.getElementById('apply-sig-mode').addEventListener('click', async () => { await applySigMode(); });
     document.getElementById('apply-ess').addEventListener('click', async () => { await applyEss(false); });
+    document.getElementById('auto-profile-toggle').addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      const res = await fetch(appPath('/api/controls/auto-profile'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      const statusEl = document.getElementById('auto-profile-status');
+      if (res.ok) {
+        const s = data.controls?.auto_profile_summary;
+        statusEl.textContent = enabled
+          ? (s ? `Today (${s.forecast_kwh} kWh forecast) \u2192 ${tuningLabel(s.profile)}` : 'Will apply on next cycle')
+          : 'Disabled \u2014 profile set manually';
+      } else {
+        statusEl.textContent = `Failed: ${data.error || 'unknown'}`;
+        e.target.checked = !enabled;  // revert
+      }
+    });
     document.querySelectorAll('#algorithm-tuning [data-tuning]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (hydratingControls || essApplyInFlight) return;

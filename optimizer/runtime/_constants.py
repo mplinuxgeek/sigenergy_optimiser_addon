@@ -12,4 +12,5 @@ ALGORITHM_TUNINGS = {
     "balanced",
     "max_consumption",
     "max_profits",
+    "no_exports",
 }

@@ -93,6 +93,9 @@ class OptimizerRuntime(
         self._last_soc_int: int | None = None
         self._cycle_listeners: list[Callable[[], None]] = []
         self._fit_windows_cache: dict[str, Any] | None = None
+        self.auto_profile_enabled: bool = True
+        self._auto_profile_last_day: str | None = None
+        self._auto_profile_summary: dict[str, Any] | None = None
         # Price tracking: record on new 5-min block, significant grid power change, or price change
         self._last_tracked_block: int | None = None
         self._last_tracked_import_kw: float = -999.0
@@ -116,6 +119,7 @@ class OptimizerRuntime(
                 self._restore_last_state_on_startup()
                 self._restore_daily_tuning_for_today()
                 self._restore_algorithm_tuning_on_startup()
+                self._restore_auto_profile_on_startup()
                 self._restore_fit_windows_on_startup()
                 self._backfill_missing_earnings_on_startup()
 

@@ -249,6 +249,7 @@ class _LifecycleMixin:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                self._maybe_run_auto_profile_switch()
                 self._maybe_run_daily_autotune()
                 mode = self.get_control_mode()
                 if mode == "automated":

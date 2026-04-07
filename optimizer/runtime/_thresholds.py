@@ -151,6 +151,37 @@ class _ThresholdsMixin:
             effective["evening_gap_reserve_enabled"] = False
             effective["variable_floor_enabled"] = False
 
+        elif tuning == "no_exports":
+            # No grid exports at all — battery and solar serve the home only.
+            # Imports remain fully enabled so the battery can cheap-charge freely.
+            effective["export_threshold_low"] = 99.0
+            effective["export_threshold_medium"] = 99.0
+            effective["export_threshold_high"] = 99.0
+            effective["export_limit_low"] = 0.0
+            effective["export_limit_medium"] = 0.0
+            effective["export_limit_high"] = 0.0
+            effective["allow_low_medium_export_positive_fit"] = False
+            effective["allow_positive_fit_battery_discharging"] = False
+            effective["forced_export_on_spike_enabled"] = False
+            effective["forecast_hold_enabled"] = False
+            effective["battery_saturation_export_enabled"] = False
+            effective["dynamic_reserve_enabled"] = False
+            effective["morning_space_creation_enabled"] = False
+            effective["conditional_grid_import_enabled"] = False
+            # Keep balanced import behaviours: evening reserve + variable floor.
+            effective["min_soc_floor"] = 5.0
+            effective["midnight_reserve_soc"] = 70.0
+            effective["morning_dump_target_soc"] = 5.0
+            effective["wacs_export_gate_enabled"] = False
+            effective["evening_gap_reserve_enabled"] = True
+            effective["evening_gap_start_hour"] = int(base.get("evening_gap_start_hour", 18))
+            effective["evening_gap_end_hour"] = int(base.get("evening_gap_end_hour", 22))
+            effective["variable_floor_enabled"] = True
+            effective["variable_floor_morning_soc"] = float(base.get("variable_floor_morning_soc", 10.0))
+            effective["variable_floor_afternoon_soc"] = float(base.get("variable_floor_afternoon_soc", 40.0))
+            effective["variable_floor_morning_hour"] = int(base.get("variable_floor_morning_hour", 9))
+            effective["variable_floor_afternoon_hour"] = int(base.get("variable_floor_afternoon_hour", 16))
+
         else:
             # balanced — smart hybrid / opportunity-cost behaviours
             effective["min_soc_floor"] = 2.5
@@ -209,6 +240,68 @@ class _ThresholdsMixin:
                 LOG.info("Restored persisted algorithm tuning on startup: %s", tuning)
         except Exception:
             LOG.exception("Failed restoring algorithm tuning")
+
+    # ------------------------------------------------------------------
+    # Auto profile switching — selects a tuning profile each day based
+    # on the Solcast PV forecast total for today.
+    # ------------------------------------------------------------------
+
+    def _profile_for_forecast_kwh(self, kwh: float) -> str:
+        if kwh >= 100.0:
+            return "max_profits"
+        if kwh >= 75.0:
+            return "balanced"
+        if kwh >= 60.0:
+            return "max_consumption"
+        return "no_exports"
+
+    def set_auto_profile_enabled(self, enabled: bool) -> None:
+        self.auto_profile_enabled = bool(enabled)
+        try:
+            self.state_store.set_json(
+                "auto_profile_enabled",
+                {"enabled": self.auto_profile_enabled, "saved_at": self._now()},
+            )
+        except Exception as exc:
+            LOG.warning("Failed persisting auto_profile_enabled: %s", exc)
+
+    def _restore_auto_profile_on_startup(self) -> None:
+        try:
+            doc = self.state_store.get_json("auto_profile_enabled") or {}
+            if "enabled" in doc:
+                self.auto_profile_enabled = bool(doc["enabled"])
+                LOG.info("Restored auto_profile_enabled=%s", self.auto_profile_enabled)
+        except Exception:
+            LOG.exception("Failed restoring auto_profile_enabled")
+
+    def _maybe_run_auto_profile_switch(self) -> None:
+        if not self.auto_profile_enabled:
+            return
+        now = datetime.now(self.tz)
+        day = now.date().isoformat()
+        if self._auto_profile_last_day == day:
+            return
+        try:
+            states = self.client.get_all_states()
+            pv_item = states.get(self.cfg.entities.forecast_today_sensor)
+            if pv_item is None:
+                return  # Solcast not yet available; retry next cycle
+            kwh = self._to_float(pv_item.state)
+            if kwh is None or kwh < 0:
+                return
+        except Exception:
+            LOG.exception("Auto profile switch: failed reading Solcast forecast")
+            return
+        profile = self._profile_for_forecast_kwh(kwh)
+        LOG.info("Auto profile switch: %.1f kWh forecast → %s", kwh, profile)
+        self._auto_profile_last_day = day
+        self._auto_profile_summary = {
+            "day": day,
+            "forecast_kwh": round(kwh, 2),
+            "profile": profile,
+            "applied_at": self._now(),
+        }
+        self.set_algorithm_tuning(profile, source="auto_profile")
 
     def set_algorithm_tuning(self, tuning: str, *, source: str = "api") -> dict[str, Any]:
         tuning = (tuning or "").strip().lower()

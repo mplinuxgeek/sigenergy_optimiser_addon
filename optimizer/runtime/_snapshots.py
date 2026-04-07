@@ -32,6 +32,8 @@ class _SnapshotsMixin:
             "control_modes": sorted(CONTROL_MODES),
             "algorithm_tuning": self.algorithm_tuning,
             "algorithm_tuning_options": sorted(ALGORITHM_TUNINGS),
+            "auto_profile_enabled": self.auto_profile_enabled,
+            "auto_profile_summary": self._auto_profile_summary,
             "ess": {
                 "ha_control_switch": pick(e.ha_control_switch),
                 "ems_mode_select": mode_info,
@@ -55,6 +57,8 @@ class _SnapshotsMixin:
                 "control_mode": self.control_mode,
                 "algorithm_tuning": self.algorithm_tuning,
                 "autotune": self._autotune_summary,
+                "auto_profile_enabled": self.auto_profile_enabled,
+                "auto_profile_summary": self._auto_profile_summary,
                 "thresholds": {
                     "export_threshold_low": t.export_threshold_low,
                     "export_threshold_medium": t.export_threshold_medium,

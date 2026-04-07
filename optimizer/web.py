@@ -327,6 +327,17 @@ async def api_control_tuning(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+@app.post("/api/controls/auto-profile", dependencies=_AUTH)
+async def api_auto_profile(request: Request) -> JSONResponse:
+    body = await request.json()
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return JSONResponse({"ok": False, "error": "enabled must be a boolean"}, status_code=400)
+    logging.getLogger(__name__).info("Human input: /api/controls/auto-profile enabled=%s", enabled)
+    await asyncio.to_thread(lambda: RUNTIME.set_auto_profile_enabled(enabled))
+    return JSONResponse({"ok": True, "controls": RUNTIME.controls_snapshot()})
+
+
 @app.post("/api/controls/ess", dependencies=_AUTH)
 async def api_control_ess(request: Request) -> JSONResponse:
     body = await request.json()
