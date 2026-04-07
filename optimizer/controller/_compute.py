@@ -1,331 +1,24 @@
+# Part of Optimizer — see optimizer/controller/__init__.py
 from __future__ import annotations
 
 import logging
-import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from optimizer.config import AppConfig
-from optimizer.fit_export_window_analysis import WindowCandidates, get_export_window_candidates
-from optimizer.ha_client import EntityState, HAClient
+from optimizer.ha_client import EntityState
+from optimizer.controller._helpers import (
+    Decision,
+    _to_float,
+    _state_float,
+    _is_on,
+    _attr,
+    _parse_ts,
+)
 
 LOG = logging.getLogger(__name__)
 
 
-def _to_float(value: Any, default: float = 0.0) -> float:
-    try:
-        if value in (None, "unknown", "unavailable", "none", ""):
-            return default
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def _state_float(states: dict[str, EntityState], entity_id: str, default: float = 0.0) -> float:
-    s = states.get(entity_id)
-    return _to_float(s.state if s else None, default)
-
-
-def _is_on(states: dict[str, EntityState], entity_id: str) -> bool:
-    s = states.get(entity_id)
-    return bool(s and s.state == "on")
-
-
-def _attr(states: dict[str, EntityState], entity_id: str, key: str, default: Any = None) -> Any:
-    s = states.get(entity_id)
-    if not s:
-        return default
-    return s.attributes.get(key, default)
-
-
-def _bounded_number_value(states: dict[str, EntityState], entity_id: str, value: float) -> float:
-    min_v = _to_float(_attr(states, entity_id, "min", None), float("-inf"))
-    max_v = _to_float(_attr(states, entity_id, "max", None), float("inf"))
-    bounded = value
-    if bounded < min_v:
-        bounded = min_v
-    if bounded > max_v:
-        bounded = max_v
-    return bounded
-
-
-def _parse_ts(value: Any, tz: ZoneInfo) -> datetime | None:
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value.astimezone(tz)
-    if not isinstance(value, str):
-        return None
-    text = value.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(text).astimezone(tz)
-    except ValueError:
-        return None
-
-
-@dataclass
-class Decision:
-    reason: str
-    desired_mode: str
-    desired_export_limit: float
-    desired_import_limit: float
-    desired_pv_max_power_limit: float
-    sunrise_soc_required: float
-    battery_soc: float
-    feedin_price: float
-    current_price: float
-    effective_ha_control: bool
-    export_floor_soc: float = 0.0
-    morning_dump_active: bool = False
-
-
-class Optimizer:
-    def __init__(self, config: AppConfig, client: HAClient, timezone: str = "Australia/Adelaide") -> None:
-        self.cfg = config
-        self.ha = client
-        self.tz = ZoneInfo(timezone)
-        self.last_daily_date: str | None = None
-        self.last_morning_date: str | None = None
-        self._export_hysteresis_on: bool = False
-
-    def _forecast_pv_points_kw(self, states: dict[str, EntityState], entity_id: str) -> list[tuple[datetime, float]]:
-        item = states.get(entity_id)
-        if not item:
-            return []
-        attrs = item.attributes or {}
-        rows: Any = attrs.get("detailedForecast") or attrs.get("detailedHourly") or attrs.get("forecast") or attrs.get("forecasts") or []
-        if not isinstance(rows, list):
-            return []
-
-        out: list[tuple[datetime, float]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            ts = _parse_ts(row.get("period_start") or row.get("time") or row.get("start_time"), self.tz)
-            if not ts:
-                continue
-            v = _to_float(
-                row.get("pv_estimate")
-                if row.get("pv_estimate") is not None
-                else row.get("estimate")
-                if row.get("estimate") is not None
-                else row.get("value"),
-                -1.0,
-            )
-            if v < 0:
-                continue
-            out.append((ts, max(0.0, v)))
-        out.sort(key=lambda x: x[0])
-        return out
-
-    def _forecast_price_points(
-        self,
-        states: dict[str, EntityState],
-        entity_ids: list[str],
-    ) -> list[tuple[datetime, float]]:
-        out: list[tuple[datetime, float]] = []
-        seen: set[tuple[str, float]] = set()
-        for entity_id in entity_ids:
-            if not entity_id:
-                continue
-            item = states.get(entity_id)
-            if not item:
-                continue
-            attrs = item.attributes or {}
-            rows: Any = attrs.get("forecast") or attrs.get("forecasts") or []
-            if not isinstance(rows, list):
-                continue
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                ts = _parse_ts(row.get("time") or row.get("start_time") or row.get("period_start"), self.tz)
-                if not ts:
-                    continue
-                price = _to_float(
-                    row.get("value")
-                    if row.get("value") is not None
-                    else row.get("per_kwh")
-                    if row.get("per_kwh") is not None
-                    else row.get("estimate"),
-                    float("nan"),
-                )
-                if price != price:
-                    continue
-                k = (ts.isoformat(), float(price))
-                if k in seen:
-                    continue
-                seen.add(k)
-                out.append((ts, float(price)))
-        out.sort(key=lambda x: x[0])
-        return out
-
-    def _to_local_naive(self, ts: datetime) -> datetime:
-        return ts.astimezone(self.tz).replace(tzinfo=None)
-
-    def _to_local_aware(self, ts: Any) -> datetime | None:
-        if ts is None:
-            return None
-        if hasattr(ts, "to_pydatetime"):
-            ts = ts.to_pydatetime()
-        if not isinstance(ts, datetime):
-            return None
-        if ts.tzinfo is None:
-            return ts.replace(tzinfo=self.tz)
-        return ts.astimezone(self.tz)
-
-    def _build_price_table(
-        self,
-        states: dict[str, EntityState],
-        *,
-        now: datetime,
-    ) -> list[dict[str, Any]]:
-        e = self.cfg.entities
-
-        def _series(entity_ids: list[str], current_entity_id: str) -> dict[datetime, float]:
-            out: dict[datetime, float] = {}
-            for ts, value in self._forecast_price_points(states, entity_ids):
-                local_ts = self._to_local_naive(ts)
-                if local_ts.date() != now.date():
-                    continue
-                out[local_ts] = float(value)
-            current_item = states.get(current_entity_id)
-            current_value = _to_float(current_item.state if current_item else None, float("nan"))
-            if current_value == current_value:
-                out[self._to_local_naive(now)] = float(current_value)
-            return out
-
-        fit_points = _series([e.feedin_forecast_sensor, e.feedin_sensor], e.feedin_sensor)
-        if not fit_points:
-            return []
-
-        general_points = _series([e.price_forecast_sensor, e.price_sensor], e.price_sensor)
-        all_times = sorted(set(fit_points) | set(general_points))
-        fit_item = states.get(e.feedin_sensor) or states.get(e.feedin_forecast_sensor)
-        spike_status = ""
-        if fit_item:
-            spike_status = str(fit_item.attributes.get("spike_status", "") or "").strip().lower()
-        rows: list[dict[str, Any]] = []
-        for ts in all_times:
-            row: dict[str, Any] = {
-                "time": ts,
-                "fit": fit_points.get(ts, float("nan")),
-            }
-            general_value = general_points.get(ts)
-            if general_value is not None:
-                row["general"] = general_value
-            if spike_status:
-                row["spike_status"] = spike_status
-            rows.append(row)
-        return rows
-
-    def _window_candidates(
-        self,
-        states: dict[str, EntityState],
-        *,
-        now: datetime,
-        period: str,
-        top_n: int = 10,
-        morning_end_hour: int = 9,
-        evening_start_hour: int = 19,
-        daytime_start_hour: int = 9,
-        daytime_end_hour: int = 15,
-        window_minutes: int = 60,
-        exclude_spike: bool = False,
-    ):
-        price_table = self._build_price_table(states, now=now)
-        if not price_table:
-            return WindowCandidates()
-        try:
-            return get_export_window_candidates(
-                price_table,
-                period=period,
-                top_n=top_n,
-                morning_end_hour=morning_end_hour,
-                evening_start_hour=evening_start_hour,
-                daytime_start_hour=daytime_start_hour,
-                daytime_end_hour=daytime_end_hour,
-                window_minutes=window_minutes,
-                exclude_spike=exclude_spike,
-            )
-        except Exception:
-            LOG.exception("FIT export window analysis failed for %s", period)
-            return WindowCandidates()
-
-    def _morning_dump_window(
-        self,
-        states: dict[str, EntityState],
-        *,
-        now: datetime,
-        next_rising: datetime | None,
-        preferred_hours: float,
-        target_duration_h: float,
-        productive_solar_dt: datetime | None = None,
-    ) -> tuple[datetime | None, datetime | None]:
-        if not next_rising or target_duration_h <= 0:
-            return None, None
-        # Anchor the end of the dump window on productive solar (PV ≥ load), not
-        # bare sunrise.  PV typically takes 1-2 h after sunrise to exceed house
-        # load, so ending at sunrise leaves the battery much too full.
-        window_end = productive_solar_dt if productive_solar_dt is not None else next_rising
-        min_duration_h = 0.5
-        duration_h = max(min_duration_h, target_duration_h)
-        default_start = window_end - timedelta(hours=duration_h)
-
-        # Keep search reasonable and close to sunrise.
-        max_search_back_h = min(4.0, max(preferred_hours * 2.0, preferred_hours + 0.5, duration_h + 0.5))
-        earliest_start = window_end - timedelta(hours=max_search_back_h)
-        latest_start = window_end - timedelta(hours=min_duration_h)
-        if earliest_start >= latest_start:
-            return default_start, window_end
-
-        analysis_morning_end_hour = max(
-            1,
-            min(
-                23,
-                window_end.hour + (1 if (window_end.minute or window_end.second or window_end.microsecond) else 0),
-            ),
-        )
-        candidates = self._window_candidates(
-            states,
-            now=now,
-            period="morning",
-            top_n=20,
-            morning_end_hour=analysis_morning_end_hour,
-            window_minutes=60,
-            exclude_spike=True,
-        )
-        if not candidates:
-            return default_start, window_end
-
-        for _, row in candidates.iterrows():
-            start_dt = self._to_local_aware(row.get("start_time"))
-            if start_dt is None:
-                continue
-            if earliest_start <= start_dt <= latest_start:
-                return start_dt, window_end
-        return default_start, window_end
-
-    def _hours_until_pv_exceeds_load(
-        self,
-        states: dict[str, EntityState],
-        *,
-        now: datetime,
-        load_kw: float,
-        fallback_hours: float,
-    ) -> float:
-        points = self._forecast_pv_points_kw(states, self.cfg.entities.forecast_today_sensor)
-        if not points:
-            return max(0.0, fallback_hours)
-        threshold_kw = max(0.0, load_kw)
-        for ts, pv_kw in points:
-            if ts < now:
-                continue
-            if pv_kw >= threshold_kw:
-                return max(0.0, (ts - now).total_seconds() / 3600.0)
-        return max(0.0, fallback_hours)
-
+class _ComputeMixin:
     def _parse_weather_adverse(
         self,
         states: dict[str, EntityState],
@@ -604,8 +297,8 @@ class Optimizer:
         if ess_max_charge <= 0:
             ess_max_charge = 999.0
 
-        price_is_negative = price_is_actual and current_price < 0
-        feedin_positive = feedin_price > 0
+        price_is_negative = price_is_actual and current_price < -0.01  # ignore sub-1c rounding artefacts
+        feedin_positive = feedin_price >= 0.01                           # ignore sub-1c rounding artefacts
         fit_start = t.export_threshold_low + max(0.0, t.fit_hysteresis_band)
         fit_stop = max(0.0, t.export_threshold_low - max(0.0, t.fit_hysteresis_band))
         _prev_hysteresis = self._export_hysteresis_on
@@ -749,11 +442,7 @@ class Optimizer:
             and battery_soc > export_floor_soc
         )
 
-        # Solar-excess export: when the sun is up and FIT is positive, use the Solcast
-        # near-term forecast to estimate how much surplus PV is available above load.
-        # Charging the battery takes priority, so daytime solar surplus is only treated
-        # as exportable once the battery has substantially recovered.
-        solar_excess_min_battery_soc = 90.0
+        # forecast_pv_now_kw: used by the midnight-reserve hard-stop check below.
         _pv_pts = self._forecast_pv_points_kw(states, e.forecast_today_sensor)
         forecast_pv_now_kw = 0.0
         if _pv_pts and is_sun_up:
@@ -765,34 +454,9 @@ class Optimizer:
                 _upcoming = [(ts, kw) for ts, kw in _pv_pts if ts >= now]
                 if _upcoming:
                     forecast_pv_now_kw = _upcoming[0][1]
-        # Fallback when detailedForecast is unavailable: estimate current power from
-        # remaining forecast energy divided by hours remaining until sunset.  This gives
-        # a conservative average-power estimate so solar-excess export isn't silently
-        # disabled just because the Solcast attribute is missing or stale.
         if forecast_pv_now_kw == 0.0 and is_sun_up and hours_to_sunset > 0:
             forecast_pv_now_kw = forecast_remaining / max(0.5, hours_to_sunset)
-        # Never estimate below actual measured output — if the inverter is already
-        # producing more than the fallback average, use the real figure.
         forecast_pv_now_kw = max(forecast_pv_now_kw, pv_kw)
-        forecast_excess_kw = max(0.0, forecast_pv_now_kw - load_kw)
-        solar_excess_export_kw = (
-            min(effective_export_cap_kw, forecast_excess_kw)
-            if (
-                feedin_positive
-                and not price_is_negative
-                and is_sun_up
-                and battery_soc >= solar_excess_min_battery_soc
-            )
-            else 0.0
-        )
-        solar_excess_active = solar_excess_export_kw >= t.min_grid_transfer_kw
-        LOG.debug(
-            "_compute solar_excess: forecast_pv=%.2fkW pv=%.2fkW excess=%.2fkW "
-            "solar_export=%.2fkW active=%s feedin_pos=%s sun_up=%s soc=%.1f%% soc_min=%.1f%%",
-            forecast_pv_now_kw, pv_kw, forecast_excess_kw,
-            solar_excess_export_kw, solar_excess_active, feedin_positive, is_sun_up,
-            battery_soc, solar_excess_min_battery_soc,
-        )
 
         if not can_export_price:
             desired_export = 0.0
@@ -820,10 +484,10 @@ class Optimizer:
                 "(soc=%.1f%% <= midnight_reserve=%.1f%% sun_up=%s fc_pv=%.2fkW)",
                 battery_soc, t.midnight_reserve_soc, is_sun_up, forecast_pv_now_kw,
             )
-        elif not soc_above_export_floor and not morning_event_export_active and not post_morning_dump_hold_active and not solar_excess_active:
+        elif not soc_above_export_floor and not morning_event_export_active and not post_morning_dump_hold_active:
             desired_export = 0.0
             export_reason = f"Export blocked (reserve {export_floor_soc:.0f}%)"
-        elif not export_hysteresis_allows and not morning_event_export_active and not post_morning_dump_hold_active and not solar_excess_active:
+        elif not export_hysteresis_allows and not morning_event_export_active and not post_morning_dump_hold_active:
             desired_export = 0.0
             export_reason = f"Export blocked (FIT hysteresis {feedin_price*100:.0f}c)"
         else:
@@ -843,8 +507,6 @@ class Optimizer:
                     max(t.export_limit_medium, effective_export_cap_kw * t.morning_dump_rate_fraction),
                 )
                 scaled_export = max(scaled_export, hold_export_kw)
-            if solar_excess_active:
-                scaled_export = max(scaled_export, solar_excess_export_kw)
             desired_export = min(effective_export_cap_kw, max(0.0, scaled_export))
             if desired_export < t.min_grid_transfer_kw:
                 desired_export = 0.0
@@ -862,11 +524,6 @@ class Optimizer:
                 )
             elif post_morning_dump_hold_active:
                 export_reason = f"Post-morning-dump hold {desired_export:.1f}kW until FIT turns negative"
-            elif solar_excess_active and export_tier == 0.0:
-                export_reason = (
-                    f"Solar excess {desired_export:.1f}kW "
-                    f"(fcast {forecast_pv_now_kw:.1f}kW PV, {load_kw:.1f}kW load, {feedin_price*100:.0f}c FIT)"
-                )
             else:
                 export_reason = f"Export {feedin_price * 100:.0f}c"
 
@@ -925,7 +582,7 @@ class Optimizer:
                 )
                 if _ratio_hold or _fraction_hold:
                     # Cap to solar surplus only — don't draw down the battery
-                    _solar_only = min(desired_export, solar_excess_export_kw)
+                    _solar_only = min(desired_export, excess_solar_kw)
                     if _solar_only < t.min_grid_transfer_kw:
                         _solar_only = 0.0
                     if _solar_only < desired_export - 0.01:
@@ -1010,7 +667,7 @@ class Optimizer:
         # --- Max Profits: hold battery for upcoming high-price event ---
         # Cap export to solar excess only so the battery reaches the event at 100%.
         elif _forecast_hold_active and desired_export > 0:
-            desired_export = min(desired_export, solar_excess_export_kw)
+            desired_export = min(desired_export, excess_solar_kw)
             if desired_export < t.min_grid_transfer_kw:
                 desired_export = 0.0
             export_reason = f"Holding for {_forecast_hold_max_price * 100:.0f}c forecast event"
@@ -1027,7 +684,7 @@ class Optimizer:
             and not morning_event_export_active
             and not (t.forced_export_on_spike_enabled and feedin_price >= t.forced_export_spike_threshold)
         ):
-            desired_export = min(desired_export, solar_excess_export_kw)
+            desired_export = min(desired_export, excess_solar_kw)
             if desired_export < t.min_grid_transfer_kw:
                 desired_export = 0.0
             if desired_export == 0.0:
@@ -1053,7 +710,7 @@ class Optimizer:
         ):
             _wacs = t.wacs_buy_price / max(0.01, t.wacs_round_trip_efficiency) + t.wacs_degradation_cost_per_kwh
             if feedin_price < _wacs:
-                desired_export = min(desired_export, solar_excess_export_kw)
+                desired_export = min(desired_export, excess_solar_kw)
                 if desired_export < t.min_grid_transfer_kw:
                     desired_export = 0.0
                 export_reason = (
@@ -1061,6 +718,38 @@ class Optimizer:
                     f"({feedin_price * 100:.0f}c < {_wacs * 100:.0f}c WACS)"
                 )
                 LOG.debug("_compute wacs_gate: feedin=%.4f wacs=%.4f", feedin_price, _wacs)
+
+        # --- Low solar export protection ---
+        # Block battery-backed export when the Solcast forecast is insufficient to
+        # refill the battery.  Rule: forecast < fill_need × factor → export blocked.
+        # While the sun is up, uses the remaining-today forecast; after sunset,
+        # uses tomorrow's forecast.  Solar-excess export (PV > load) is always
+        # allowed since that route does not discharge the battery.
+        # Spike exports also bypass this gate — rare high-value events are worth the
+        # short-term cost of buying back at standard rates.
+        if (
+            t.low_solar_export_protection_enabled
+            and desired_export > 0
+            and not morning_event_export_active
+            and not (t.forced_export_on_spike_enabled and feedin_price >= t.forced_export_spike_threshold)
+        ):
+            _relevant_forecast = forecast_remaining if is_sun_up else forecast_tomorrow
+            _low_solar_threshold_kwh = battery_fill_need_kwh * t.low_solar_export_factor
+            if _relevant_forecast < _low_solar_threshold_kwh:
+                desired_export = min(desired_export, excess_solar_kw)
+                if desired_export < t.min_grid_transfer_kw:
+                    desired_export = 0.0
+                _period_label = "remaining today" if is_sun_up else "tomorrow"
+                export_reason = (
+                    f"Export blocked (low solar: {_relevant_forecast:.1f}kWh {_period_label} "
+                    f"< {_low_solar_threshold_kwh:.1f}kWh needed to fill)"
+                )
+                LOG.debug(
+                    "_compute low_solar_protection: forecast=%.2fkWh threshold=%.2fkWh "
+                    "fill_need=%.2fkWh factor=%.1f",
+                    _relevant_forecast, _low_solar_threshold_kwh,
+                    battery_fill_need_kwh, t.low_solar_export_factor,
+                )
 
         # ---------------------------------------------------------------
         # Grid import decision
@@ -1178,286 +867,3 @@ class Optimizer:
             export_floor_soc=round(export_floor_soc, 2),
             morning_dump_active=morning_dump_active,
         )
-
-    def _apply(self, states: dict[str, EntityState], d: Decision) -> None:
-        e = self.cfg.entities
-        t = self.cfg.thresholds
-        actions_triggered: list[str] = []
-
-        current_mode = states.get(e.ems_mode_select).state if states.get(e.ems_mode_select) else ""
-        current_export = _state_float(states, e.grid_export_limit, 0)
-        current_import = _state_float(states, e.grid_import_limit, 0)
-        current_pv_cap = _state_float(states, e.pv_max_power_limit, t.pv_max_power_normal)
-
-        LOG.debug(
-            "_apply: current[mode=%r export=%.2f import=%.2f pv=%.2f] "
-            "desired[mode=%r export=%.2f import=%.2f pv=%.2f] ha_ctrl=%s",
-            current_mode, current_export, current_import, current_pv_cap,
-            d.desired_mode, d.desired_export_limit, d.desired_import_limit,
-            d.desired_pv_max_power_limit, d.effective_ha_control,
-        )
-
-        def _safe_call(label: str, fn) -> None:
-            try:
-                fn()
-            except Exception as exc:
-                LOG.warning("%s failed: %s", label, exc)
-
-        _safe_call(
-            "input_number.set_value min_soc_to_sunrise",
-            lambda: self.ha.set_input_number(e.min_soc_to_sunrise_helper, d.sunrise_soc_required),
-        )
-
-        just_enabled_ha_control = False
-        if t.auto_enable_ha_control and not _is_on(states, e.ha_control_switch) and d.effective_ha_control:
-            _safe_call("switch.turn_on ha_control", lambda: self.ha.switch_on(e.ha_control_switch))
-            actions_triggered.append(f"switch_on:{e.ha_control_switch}")
-            just_enabled_ha_control = True
-
-        if just_enabled_ha_control:
-            LOG.info("HA control switch enabled; deferring mode/limit writes until next cycle")
-            return
-
-        if d.effective_ha_control and current_mode != d.desired_mode:
-            actions_triggered.append(f"set_mode:{d.desired_mode}")
-            _safe_call(
-                "select.select_option ems_mode",
-                lambda: self.ha.set_select(e.ems_mode_select, d.desired_mode),
-            )
-            # Force HA to poll the inverter so the entity state reflects the new
-            # mode before we write the export/import limits.  Without this, HA
-            # serves a stale cached state and _verify_and_reapply sees the old
-            # mode on every read-back, triggering endless retries.
-            _safe_call(
-                f"homeassistant.update_entity {e.ems_mode_select}",
-                lambda: self.ha.update_entity(e.ems_mode_select),
-            )
-            time.sleep(0.5)
-
-        export_setpoint = _bounded_number_value(
-            states,
-            e.grid_export_limit,
-            d.desired_export_limit if d.desired_export_limit > 0 else t.off_setpoint_kw,
-        )
-        import_setpoint = _bounded_number_value(
-            states,
-            e.grid_import_limit,
-            d.desired_import_limit if d.desired_import_limit > 0 else t.off_setpoint_kw,
-        )
-
-        export_delta_to_target = abs(export_setpoint - current_export)
-        import_delta_to_target = abs(import_setpoint - current_import)
-        epsilon = 0.0005
-        off_equiv_band = 0.15
-
-        export_effectively_off = d.desired_export_limit == 0 and current_export <= (t.off_setpoint_kw + off_equiv_band)
-        import_effectively_off = d.desired_import_limit == 0 and current_import <= (t.off_setpoint_kw + off_equiv_band)
-
-        if d.effective_ha_control and (
-            (not export_effectively_off)
-            and export_delta_to_target > epsilon
-            and (
-                d.desired_export_limit == 0
-                or export_delta_to_target >= t.min_change_threshold
-                or current_export <= t.off_setpoint_kw
-            )
-        ):
-            actions_triggered.append(f"set_export:{export_setpoint}")
-            _safe_call(
-                f"number.set_value grid_export_limit entity={e.grid_export_limit} value={export_setpoint}",
-                lambda: self.ha.set_number(e.grid_export_limit, export_setpoint),
-            )
-            if d.desired_export_limit > 0:
-                _safe_call("input_boolean.turn_on automated_export_flag", lambda: self.ha.bool_on(e.automated_export_flag))
-            else:
-                _safe_call("input_boolean.turn_off automated_export_flag", lambda: self.ha.bool_off(e.automated_export_flag))
-
-        if d.effective_ha_control and (
-            (not import_effectively_off)
-            and import_delta_to_target > epsilon
-            and (
-                d.desired_import_limit == 0
-                or import_delta_to_target >= t.min_change_threshold
-                or current_import <= t.off_setpoint_kw
-            )
-        ):
-            actions_triggered.append(f"set_import:{import_setpoint}")
-            _safe_call(
-                f"number.set_value grid_import_limit entity={e.grid_import_limit} value={import_setpoint}",
-                lambda: self.ha.set_number(e.grid_import_limit, import_setpoint),
-            )
-
-        sun_state = states.get(e.sun_entity).state if states.get(e.sun_entity) else "unknown"
-        pv_delta = abs(d.desired_pv_max_power_limit - current_pv_cap)
-        allow_night_pv_cap = d.desired_pv_max_power_limit <= (t.off_setpoint_kw + 0.05)
-        should_set_pv_cap = pv_delta >= 0.1 and (sun_state != "below_horizon" or allow_night_pv_cap)
-        if should_set_pv_cap:
-            pv_cap_setpoint = _bounded_number_value(states, e.pv_max_power_limit, d.desired_pv_max_power_limit)
-            actions_triggered.append(f"set_pv_max:{pv_cap_setpoint}")
-            _safe_call(
-                f"number.set_value pv_max_power_limit entity={e.pv_max_power_limit} value={pv_cap_setpoint}",
-                lambda: self.ha.set_number(e.pv_max_power_limit, pv_cap_setpoint),
-            )
-
-        # Flush the number entity caches so _verify_and_reapply_if_needed sees
-        # the new values when it reads back 600 ms later.  Without this, HA
-        # returns the last polled value from the integration's own scan interval.
-        number_entities_written = [
-            eid for lbl, eid in [
-                ("set_export", e.grid_export_limit),
-                ("set_import", e.grid_import_limit),
-            ]
-            if any(a.startswith(lbl) for a in actions_triggered)
-        ]
-        if number_entities_written:
-            try:
-                self.ha.update_entities(number_entities_written)
-            except Exception as exc:
-                LOG.warning("update_entities post-write failed: %s", exc)
-
-        self._notify_import_export_transitions(states, d)
-        self._notify_battery_events(states, d)
-
-        current_reason = states.get(e.reason_text).state if states.get(e.reason_text) else ""
-        if current_reason != d.reason:
-            self.ha.logbook("SigEnergy Reason", d.reason)
-            self.ha.set_input_text(e.reason_text, d.reason)
-
-        if actions_triggered:
-            LOG.info(
-                "Action trigger (controller): %s | mode=%s export=%.2f import=%.2f pv_max=%.2f soc=%.2f reason=%s",
-                ", ".join(actions_triggered),
-                d.desired_mode,
-                d.desired_export_limit,
-                d.desired_import_limit,
-                d.desired_pv_max_power_limit,
-                d.battery_soc,
-                d.reason,
-            )
-        else:
-            LOG.debug(
-                "_apply: no changes (mode=%r export=%.2f import=%.2f pv=%.2f soc=%.1f%%)",
-                d.desired_mode, d.desired_export_limit, d.desired_import_limit,
-                d.desired_pv_max_power_limit, d.battery_soc,
-            )
-
-    def _notify_import_export_transitions(self, states: dict[str, EntityState], d: Decision) -> None:
-        svc = self.cfg.service.notification_service
-        if not svc:
-            return
-
-        e = self.cfg.entities
-        current_export = _state_float(states, e.grid_export_limit, 0)
-        current_import = _state_float(states, e.grid_import_limit, 0)
-        last_export = states.get(e.last_export_notification).state if states.get(e.last_export_notification) else ""
-        last_import = states.get(e.last_import_notification).state if states.get(e.last_import_notification) else ""
-
-        daily_export = _state_float(states, e.daily_export_energy, 0)
-        daily_import = _state_float(states, e.daily_import_energy, 0)
-
-        if current_export == 0 and d.desired_export_limit > 0 and last_export != "started":
-            self.ha.set_input_number(e.export_session_start, daily_export)
-            self.ha.notify(
-                svc,
-                "SigEnergy: Export Started",
-                f"FIT ${d.feedin_price:.3f}/kWh, export {d.desired_export_limit:.2f}kW, SoC {d.battery_soc:.0f}%",
-            )
-            self.ha.set_input_text(e.last_export_notification, "started")
-
-        if current_export > 0 and d.desired_export_limit == 0 and last_export != "stopped":
-            start = _state_float(states, e.export_session_start, daily_export)
-            session = max(0.0, daily_export - start)
-            self.ha.notify(
-                svc,
-                "SigEnergy: Export Stopped",
-                f"Session export {session:.3f}kWh, daily export {daily_export:.3f}kWh",
-            )
-            self.ha.set_input_text(e.last_export_notification, "stopped")
-
-        if current_import == 0 and d.desired_import_limit > 0 and last_import != "started":
-            self.ha.set_input_number(e.import_session_start, daily_import)
-            self.ha.notify(
-                svc,
-                "SigEnergy: Import Started",
-                f"Price ${d.current_price:.3f}/kWh, import {d.desired_import_limit:.2f}kW, SoC {d.battery_soc:.0f}%",
-            )
-            self.ha.set_input_text(e.last_import_notification, "started")
-
-        if current_import > 0 and d.desired_import_limit == 0 and last_import != "stopped":
-            start = _state_float(states, e.import_session_start, daily_import)
-            session = max(0.0, daily_import - start)
-            self.ha.notify(
-                svc,
-                "SigEnergy: Import Stopped",
-                f"Session import {session:.3f}kWh, daily import {daily_import:.3f}kWh",
-            )
-            self.ha.set_input_text(e.last_import_notification, "stopped")
-
-    def _notify_battery_events(self, states: dict[str, EntityState], d: Decision) -> None:
-        svc = self.cfg.service.notification_service
-        if not svc:
-            return
-        e = self.cfg.entities
-        t = self.cfg.thresholds
-
-        battery_soc = d.battery_soc
-        armed = _is_on(states, e.battery_full_notification_armed)
-        rearm_soc = min(t.battery_full_notification_rearm_soc, t.battery_full_notification_soc - 1)
-
-        if battery_soc <= rearm_soc and not armed:
-            self.ha.bool_on(e.battery_full_notification_armed)
-            armed = True
-
-        if battery_soc < t.sunrise_reserve_soc:
-            self.ha.notify(
-                svc,
-                "Battery below reserve SoC",
-                f"Battery {battery_soc:.0f}% below reserve {t.sunrise_reserve_soc:.0f}%",
-            )
-
-        if battery_soc <= 1:
-            self.ha.notify(svc, "Battery Empty", f"Battery SoC {battery_soc:.0f}%")
-
-        if armed and battery_soc >= t.battery_full_notification_soc:
-            self.ha.notify(
-                svc,
-                "Battery Full",
-                f"Battery SoC {battery_soc:.0f}% (re-arms at {rearm_soc:.0f}%)",
-            )
-            self.ha.bool_off(e.battery_full_notification_armed)
-
-    def _send_summaries(self, states: dict[str, EntityState], d: Decision) -> None:
-        s = self.cfg.service
-        if not s.notification_service:
-            return
-
-        now = datetime.now(self.tz)
-        now_day = now.strftime("%Y-%m-%d")
-        now_hm = now.strftime("%H:%M")
-        e = self.cfg.entities
-
-        if s.notify_daily_summary and now_hm == s.daily_summary_time[:5] and self.last_daily_date != now_day:
-            self.ha.notify(
-                s.notification_service,
-                "SigEnergy Summary",
-                (
-                    f"Use {_state_float(states, e.daily_load_energy, 0):.2f}kWh, "
-                    f"PV {_state_float(states, e.daily_pv_energy, 0):.2f}kWh, "
-                    f"Import {_state_float(states, e.daily_import_energy, 0):.2f}kWh, "
-                    f"Export {_state_float(states, e.daily_export_energy, 0):.2f}kWh, "
-                    f"SoC {d.battery_soc:.0f}%"
-                ),
-            )
-            self.last_daily_date = now_day
-
-        if s.notify_morning_summary and now_hm == s.morning_summary_time[:5] and self.last_morning_date != now_day:
-            self.ha.notify(
-                s.notification_service,
-                "SigEnergy Morning",
-                (
-                    f"PV forecast today {_state_float(states, e.forecast_today_sensor, 0):.1f}kWh, "
-                    f"battery discharge {_state_float(states, e.daily_battery_discharge_energy, 0):.2f}kWh, "
-                    f"SoC {d.battery_soc:.0f}%"
-                ),
-            )
-            self.last_morning_date = now_day

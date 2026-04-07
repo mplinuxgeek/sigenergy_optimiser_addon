@@ -8,7 +8,7 @@ import os
 import secrets
 import threading
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Security, WebSocket, WebSocketDisconnect
@@ -439,14 +439,41 @@ async def api_config_save(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+def _parse_chart_date(date: str | None) -> str | None:
+    """Validate and normalise an optional ?date=YYYY-MM-DD query param.
+    Returns None for today, the ISO date string for past dates within 7 days,
+    or raises HTTP 400 for invalid / out-of-range values.
+    """
+    if not date:
+        return None
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    today = datetime.now(timezone.utc).date()
+    min_date = today - timedelta(days=7)
+    if d > today:
+        raise HTTPException(status_code=400, detail="date must not be in the future")
+    if d < min_date:
+        raise HTTPException(status_code=400, detail="date must be within the last 7 days")
+    if d == today:
+        return None
+    return d.isoformat()
+
+
 @app.get("/api/prices")
-def api_prices() -> JSONResponse:
-    return JSONResponse(RUNTIME.prices_snapshot())
+def api_prices(date: str | None = None) -> JSONResponse:
+    return JSONResponse(RUNTIME.prices_snapshot(date=_parse_chart_date(date)))
+
+
+@app.get("/api/fit-windows")
+def api_fit_windows(date: str | None = None) -> JSONResponse:
+    return JSONResponse(RUNTIME.fit_windows_snapshot(date=_parse_chart_date(date)))
 
 
 @app.get("/api/power")
-def api_power() -> JSONResponse:
-    return JSONResponse(RUNTIME.power_snapshot())
+def api_power(date: str | None = None) -> JSONResponse:
+    return JSONResponse(RUNTIME.power_snapshot(date=_parse_chart_date(date)))
 
 
 @app.get("/api/price-tracking")
@@ -515,7 +542,6 @@ async def api_control_thresholds(request: Request) -> JSONResponse:
     allowed = {
         "export_threshold_low", "export_threshold_medium", "export_threshold_high",
         "export_limit_low", "export_limit_medium", "export_limit_high",
-        "import_threshold_low", "import_threshold_medium", "import_threshold_high",
         "import_limit_low", "import_limit_medium", "import_limit_high",
         "ess_first_discharge_pv_threshold_kw",
     }

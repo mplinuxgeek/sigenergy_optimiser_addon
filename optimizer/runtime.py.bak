@@ -94,6 +94,7 @@ class OptimizerRuntime:
         self._sim_cache_result: dict[str, Any] | None = None
         self._last_soc_int: int | None = None
         self._cycle_listeners: list[Callable[[], None]] = []
+        self._fit_windows_cache: dict[str, Any] | None = None
         # Price tracking: record on new 5-min block, significant grid power change, or price change
         self._last_tracked_block: int | None = None
         self._last_tracked_import_kw: float = -999.0
@@ -120,6 +121,7 @@ class OptimizerRuntime:
             self._restore_last_state_on_startup()
             self._restore_daily_tuning_for_today()
             self._restore_algorithm_tuning_on_startup()
+            self._restore_fit_windows_on_startup()
         self._thread = threading.Thread(target=self._run, daemon=True, name="optimizer-worker")
         self._thread.start()
         LOG.info("Runtime started (poll=%ss)", self.poll_seconds)
@@ -345,6 +347,7 @@ class OptimizerRuntime:
             if _soc_int is not None:
                 with self._lock:
                     self._last_soc_int = _soc_int
+            self._compute_and_store_fit_windows()
 
         if decision_dict:
             self._verify_and_reapply_if_needed(decision_dict)
@@ -1520,6 +1523,41 @@ class OptimizerRuntime:
                 LOG.info("Restored daily autotune profile for %s", day)
         except Exception:
             LOG.exception("Failed restoring daily tuning")
+
+    def _restore_fit_windows_on_startup(self) -> None:
+        """Restore today's FIT export windows from persistent storage after a restart."""
+        try:
+            today = datetime.now(self.tz).date().isoformat()
+            doc = self.state_store.get_json(f"fit_windows_{today}") or {}
+            if doc.get("date") == today:
+                with self._lock:
+                    self._fit_windows_cache = doc
+                LOG.info("Restored FIT export windows for %s", today)
+        except Exception:
+            LOG.debug("Failed restoring FIT windows", exc_info=True)
+
+    def _compute_and_store_fit_windows(self) -> None:
+        """Compute FIT export window candidates for today and persist them."""
+        try:
+            now = datetime.now(self.tz)
+            states = self.client.get_all_states(use_cache=True)
+            windows = self.optimizer.compute_fit_windows_for_today(states, now=now, top_n=5)
+            date_str = now.date().isoformat()
+            self.state_store.set_json(f"fit_windows_{date_str}", windows)
+            with self._lock:
+                self._fit_windows_cache = windows
+            LOG.debug("Stored FIT export windows for %s", date_str)
+        except Exception:
+            LOG.debug("Failed computing/storing FIT windows", exc_info=True)
+
+    def fit_windows_snapshot(self) -> dict[str, Any]:
+        """Return today's FIT export window candidates, from cache or persistent storage."""
+        with self._lock:
+            data = self._fit_windows_cache
+        if not data:
+            today = datetime.now(self.tz).date().isoformat()
+            data = self.state_store.get_json(f"fit_windows_{today}") or {}
+        return data or {}
 
     def _maybe_run_daily_autotune(self) -> None:
         svc = self.cfg.service

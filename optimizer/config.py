@@ -65,9 +65,6 @@ class Thresholds:
     export_limit_low: float = 3.0
     export_limit_medium: float = 8.0
     export_limit_high: float = 25.0
-    import_threshold_low: float = 0.0
-    import_threshold_medium: float = -0.15
-    import_threshold_high: float = -0.30
     import_limit_low: float = 5.0
     import_limit_medium: float = 15.0
     import_limit_high: float = 25.0
@@ -157,6 +154,13 @@ class Thresholds:
     forecast_hold_end_hour: int = 22               # Latest hour hold can remain active
 
     # --- Balanced: smart-hybrid / opportunity-cost behaviours ---
+    # Block battery-backed export when the Solcast forecast is insufficient to refill
+    # the battery.  While the sun is up, uses the remaining-today forecast; after
+    # sunset, uses tomorrow's forecast.  Export is blocked when:
+    #   forecast_kwh < battery_fill_need_kwh × low_solar_export_factor
+    # Solar-excess export (PV > load) is always allowed.
+    low_solar_export_protection_enabled: bool = True
+    low_solar_export_factor: float = 1.5  # fill-need multiplier (1.0 = exact fill, 1.5 = 50% buffer)
     # Only export stored battery energy when the feed-in tariff exceeds the Weighted
     # Average Cost of Storage (buy_price / efficiency + degradation).
     wacs_export_gate_enabled: bool = False
@@ -207,9 +211,12 @@ class AppConfig:
 
     @staticmethod
     def load(path: str) -> "AppConfig":
+        import dataclasses
         raw = yaml.safe_load(Path(path).read_text()) or {}
         entities = Entities(**(raw.get("entities") or {}))
-        thresholds = Thresholds(**(raw.get("thresholds") or {}))
+        _threshold_fields = {f.name for f in dataclasses.fields(Thresholds)}
+        _raw_thresholds = {k: v for k, v in (raw.get("thresholds") or {}).items() if k in _threshold_fields}
+        thresholds = Thresholds(**_raw_thresholds)
         service = ServiceConfig(**(raw.get("service") or {}))
         ha = raw.get("home_assistant") or {}
         profile_overrides = {
@@ -260,11 +267,6 @@ class AppConfig:
             raise ValueError(
                 f"export thresholds must be non-decreasing: "
                 f"low={t.export_threshold_low} medium={t.export_threshold_medium} high={t.export_threshold_high}"
-            )
-        # Import threshold ordering (lower is more negative i.e. cheaper)
-        if not (t.import_threshold_medium <= t.import_threshold_low):
-            raise ValueError(
-                f"import_threshold_medium ({t.import_threshold_medium}) must be <= import_threshold_low ({t.import_threshold_low})"
             )
         # kW limits must be non-negative
         for name, val in [
