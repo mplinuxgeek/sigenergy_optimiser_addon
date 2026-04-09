@@ -20,6 +20,8 @@ class Optimizer(_ForecastMixin, _WindowsMixin, _ComputeMixin, _ApplyMixin):
         self.last_daily_date: str | None = None
         self.last_morning_date: str | None = None
         self._export_hysteresis_on: bool = False
+        self._battery_low_notified: bool = False
+        self._battery_empty_notified: bool = False
 
 
 __all__ = ["Decision", "Optimizer"]

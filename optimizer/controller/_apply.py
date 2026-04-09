@@ -195,7 +195,12 @@ class _ApplyMixin:
         daily_export = _state_float(states, e.daily_export_energy, 0)
         daily_import = _state_float(states, e.daily_import_energy, 0)
 
-        if current_export == 0 and d.desired_export_limit > 0 and last_export != "started":
+        # Treat anything at or below the off-setpoint as "effectively off" so
+        # "started"/"stopped" transitions fire correctly even when the off state
+        # writes off_setpoint_kw (0.1) rather than 0.
+        off_band = self.cfg.thresholds.off_setpoint_kw + 0.05
+
+        if current_export <= off_band and d.desired_export_limit > 0 and last_export != "started":
             self.ha.set_input_number(e.export_session_start, daily_export)
             self.ha.notify(
                 svc,
@@ -204,7 +209,7 @@ class _ApplyMixin:
             )
             self.ha.set_input_text(e.last_export_notification, "started")
 
-        if current_export > 0 and d.desired_export_limit == 0 and last_export != "stopped":
+        if current_export > off_band and d.desired_export_limit == 0 and last_export != "stopped":
             start = _state_float(states, e.export_session_start, daily_export)
             session = max(0.0, daily_export - start)
             self.ha.notify(
@@ -214,7 +219,7 @@ class _ApplyMixin:
             )
             self.ha.set_input_text(e.last_export_notification, "stopped")
 
-        if current_import == 0 and d.desired_import_limit > 0 and last_import != "started":
+        if current_import <= off_band and d.desired_import_limit > 0 and last_import != "started":
             self.ha.set_input_number(e.import_session_start, daily_import)
             self.ha.notify(
                 svc,
@@ -223,7 +228,7 @@ class _ApplyMixin:
             )
             self.ha.set_input_text(e.last_import_notification, "started")
 
-        if current_import > 0 and d.desired_import_limit == 0 and last_import != "stopped":
+        if current_import > off_band and d.desired_import_limit == 0 and last_import != "stopped":
             start = _state_float(states, e.import_session_start, daily_import)
             session = max(0.0, daily_import - start)
             self.ha.notify(
@@ -249,14 +254,22 @@ class _ApplyMixin:
             armed = True
 
         if battery_soc < t.sunrise_reserve_soc:
-            self.ha.notify(
-                svc,
-                "Battery below reserve SoC",
-                f"Battery {battery_soc:.0f}% below reserve {t.sunrise_reserve_soc:.0f}%",
-            )
+            if not self._battery_low_notified:
+                self.ha.notify(
+                    svc,
+                    "Battery below reserve SoC",
+                    f"Battery {battery_soc:.0f}% below reserve {t.sunrise_reserve_soc:.0f}%",
+                )
+                self._battery_low_notified = True
+        else:
+            self._battery_low_notified = False
 
         if battery_soc <= 1:
-            self.ha.notify(svc, "Battery Empty", f"Battery SoC {battery_soc:.0f}%")
+            if not self._battery_empty_notified:
+                self.ha.notify(svc, "Battery Empty", f"Battery SoC {battery_soc:.0f}%")
+                self._battery_empty_notified = True
+        else:
+            self._battery_empty_notified = False
 
         if armed and battery_soc >= t.battery_full_notification_soc:
             self.ha.notify(

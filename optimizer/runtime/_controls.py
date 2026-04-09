@@ -276,27 +276,13 @@ class _ControlsMixin:
         LOG.info("Applied prevent_import_export")
 
     def _apply_manual_mode(self) -> None:
-        e = self.cfg.entities
-        manual_ems_mode = "Command Charging (PV First)"
-        self._safe_action(
-            f"switch.turn_on {e.ha_control_switch}",
-            lambda: self.client.switch_on(e.ha_control_switch),
-        )
-        if not self._ensure_select_state(e.ems_mode_select, manual_ems_mode):
-            LOG.warning("EMS mode did not reach '%s' while applying manual mode", manual_ems_mode)
-        self._safe_action(
-            f"homeassistant.update_entity {e.ems_mode_select}",
-            lambda: self.client.update_entity(e.ems_mode_select),
-        )
-        time.sleep(1.0)
-        self._set_optional_number(e.grid_export_limit, 0.0)
-        self._set_optional_number(e.grid_import_limit, 0.0)
-        self._set_optional_number(e.pv_max_power_limit, 25.0)
-        self._safe_action(
-            f"input_boolean.turn_off {e.automated_export_flag}",
-            lambda: self.client.bool_off(e.automated_export_flag),
-        )
-        LOG.info("Applied manual mode")
+        # Manual mode hands control entirely to the user via "Apply ESS Controls".
+        # We must NOT write to any inverter hardware entities here — that would
+        # stomp on whatever the user is about to configure and force a reset to
+        # safe defaults that interfere with Command Charging setups.
+        # The automation and mode-bridge entity updates are already handled by
+        # set_control_mode() above; nothing further is required here.
+        LOG.info("Applied manual mode (no hardware changes — ESS settings controlled by user)")
 
     def _force_sync_entities(self, entity_ids: list[str]) -> None:
         ids: list[str] = []

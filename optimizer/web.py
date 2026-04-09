@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request, Security, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from optimizer.config import AppConfig
@@ -68,6 +69,7 @@ def _validate_float(name: str, value: float, *, min_val: float | None = None, ma
     return value
 
 app = FastAPI(title="SigEnergy Optimizer")
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 # ---------------------------------------------------------------------------

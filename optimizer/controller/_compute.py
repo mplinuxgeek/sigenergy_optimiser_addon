@@ -94,8 +94,10 @@ class _ComputeMixin:
         battery_soc = max(0.0, min(100.0, _state_float(states, e.battery_soc_sensor)))
         pv_w = _state_float(states, e.pv_power_sensor)
         load_w = _state_float(states, e.consumed_power_sensor)
-        pv_kw = pv_w / 1000.0 if pv_w > 1000 else pv_w
-        load_kw = load_w / 1000.0 if load_w > 1000 else load_w
+        pv_uom = str(_attr(states, e.pv_power_sensor, "unit_of_measurement", "kW")).lower()
+        load_uom = str(_attr(states, e.consumed_power_sensor, "unit_of_measurement", "kW")).lower()
+        pv_kw = pv_w / 1000.0 if pv_uom == "w" else pv_w
+        load_kw = load_w / 1000.0 if load_uom == "w" else load_w
 
         price_state = states.get(e.price_sensor)
         price_available = bool(price_state and price_state.state not in ("unknown", "unavailable", "none", ""))
@@ -146,6 +148,8 @@ class _ComputeMixin:
 
         if next_setting:
             hours_to_sunset = max(0.0, (next_setting - now).total_seconds() / 3600)
+        elif is_sun_up:
+            hours_to_sunset = 12.0  # sun is up but next_setting unknown; avoid false evening trigger
         else:
             hours_to_sunset = 0.0
 
@@ -843,7 +847,18 @@ class _ComputeMixin:
         )
 
         desired_pv_cap = t.pv_max_power_normal
-        if desired_mode == "Maximum Self Consumption" and desired_export == 0 and desired_import == 0 and (not is_sun_up):
+        # Apply a night-idle PV cap only when exports are genuinely market-blocked
+        # (price below threshold) — not when a profile like no_exports has
+        # artificially raised thresholds to 99c to prevent any grid export.
+        # In the latter case PV must stay at max so solar always serves the home.
+        _exports_policy_blocked = t.export_threshold_low >= 1.0
+        if (
+            not _exports_policy_blocked
+            and desired_mode == "Maximum Self Consumption"
+            and desired_export == 0
+            and desired_import == 0
+            and (not is_sun_up)
+        ):
             desired_pv_cap = max(0.1, min(t.pv_max_power_normal, t.off_setpoint_kw))
 
         reason = f"{export_reason}; {import_reason}; cover {hours_to_pv_cover_load:.1f}h"
