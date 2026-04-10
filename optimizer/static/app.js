@@ -1355,6 +1355,51 @@
       document.getElementById('overview-pair-grid').innerHTML = pairs.flat().join('');
       document.getElementById('overview-status').textContent = d.reason || '';
 
+      // Solcast 7-day forecast bar chart
+      (function renderSolcastBars() {
+        const days = [
+          { key: 'forecast_today',    offset: 0 },
+          { key: 'forecast_tomorrow', offset: 1 },
+          { key: 'forecast_day_3',    offset: 2 },
+          { key: 'forecast_day_4',    offset: 3 },
+          { key: 'forecast_day_5',    offset: 4 },
+          { key: 'forecast_day_6',    offset: 5 },
+          { key: 'forecast_day_7',    offset: 6 },
+        ];
+        const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+        const today = new Date();
+        const values = days.map(({ key, offset }) => {
+          const raw = parseFloat(entities[key]?.state);
+          return { kwh: Number.isFinite(raw) ? raw : null, offset };
+        });
+        const max = 150;
+        const barMaxPx = 94;
+        const dayLabelPx = 16; // space reserved at bottom for day name
+        const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        // Tick lines at 25%, 50%, 75%, 100% of max
+        const ticks = [25, 50, 75, 100].map(pct => {
+          const bottomPx = dayLabelPx + (pct / 100) * barMaxPx;
+          return `<div class="bar-tick" style="bottom:${bottomPx.toFixed(1)}px"></div>`
+               + `<div class="bar-tick-label" style="bottom:${bottomPx.toFixed(1)}px">${(max * pct / 100).toFixed(0)}</div>`;
+        }).join('');
+        const cols = values.map(({ kwh, offset }) => {
+          const label = dayNames[(today.getDay() + offset) % 7];
+          const date = new Date(today); date.setDate(today.getDate() + offset);
+          const dateStr = `${date.getDate()} ${monthNames[date.getMonth()]}`;
+          const heightPx = kwh != null ? Math.max(2, (kwh / max) * barMaxPx) : 2;
+          const valText = kwh != null ? kwh.toFixed(1) : '-';
+          const opacity = kwh != null ? 0.5 + 0.5 * (kwh / max) : 0.2;
+          const tipText = kwh != null ? `${dateStr}: ${kwh.toFixed(1)} kWh` : `${dateStr}: no data`;
+          return `<div class="bar-col">
+            <div class="bar-val" style="font-size:0.73rem;color:var(--muted)">${valText}</div>
+            <div class="bar-seg" style="height:${heightPx.toFixed(1)}px;background:rgba(251,191,36,${opacity.toFixed(2)})"></div>
+            <div class="bar-date" style="font-size:0.79rem">${label}</div>
+            <div class="solcast-tip">${tipText}</div>
+          </div>`;
+        });
+        document.getElementById('solcast-bar-chart').innerHTML = ticks + cols.join('');
+      })();
+
       // Hydrate threshold inputs — convert stored $/kWh values to cents for display
       const setInp = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.value = val; };
       setInp('thresh-exp-price-low',  baseThresholds.export_threshold_low  != null ? (baseThresholds.export_threshold_low  * 100).toFixed(2) : '');

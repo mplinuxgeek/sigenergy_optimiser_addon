@@ -90,6 +90,11 @@ class _SnapshotsMixin:
             "forecast_today": e.forecast_today_sensor,
             "forecast_tomorrow": e.forecast_tomorrow_sensor,
             "forecast_remaining": e.forecast_remaining_sensor,
+            "forecast_day_3": e.forecast_day_3_sensor,
+            "forecast_day_4": e.forecast_day_4_sensor,
+            "forecast_day_5": e.forecast_day_5_sensor,
+            "forecast_day_6": e.forecast_day_6_sensor,
+            "forecast_day_7": e.forecast_day_7_sensor,
         }
         out: dict[str, Any] = {}
         for key, entity_id in ids.items():

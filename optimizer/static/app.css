@@ -262,7 +262,15 @@
     .earn-zero { color: var(--muted); }
     .earnings-bar-wrap { margin: 14px 0 8px; }
     .earnings-bar-wrap h4 { margin: 0 0 8px; font-size: 0.9rem; color: var(--muted); font-weight: 600; }
+    .forecast-bar-wrap { margin-top: 4px; }
+    .forecast-bar-title { font-size: 0.78rem; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
     .bar-chart { display: flex; align-items: flex-end; gap: 6px; height: 70px; }
+    #solcast-bar-chart { height: 144px; position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 0 30px 0 6px; }
+    .bar-tick { position: absolute; left: 0; right: 0; height: 1px; background: var(--line); pointer-events: none; z-index: 0; }
+    .bar-tick-label { position: absolute; right: 4px; font-size: 0.67rem; color: var(--muted); transform: translateY(-50%); line-height: 1; z-index: 0; }
+    #solcast-bar-chart .bar-col { position: relative; z-index: 1; cursor: default; }
+    .solcast-tip { position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 0.72rem; white-space: nowrap; pointer-events: none; display: none; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
+    #solcast-bar-chart .bar-col:hover .solcast-tip { display: block; }
     .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
     .bar-col .bar-date { font-size: 0.65rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
     .bar-col .bar-seg { width: 100%; border-radius: 4px 4px 0 0; min-height: 2px; }
