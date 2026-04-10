@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="{{ request.url_for('static', path='app.css') }}" />
 </head>
 <body>
   <div class="wrap">
@@ -276,6 +276,6 @@
     <section class="panel" id="tab-logs"><div class="mono" id="logs-text"></div></section>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="{{ request.url_for('static', path='app.js') }}"></script>
 </body>
 </html>
