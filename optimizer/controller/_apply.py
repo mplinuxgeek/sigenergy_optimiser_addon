@@ -27,7 +27,7 @@ class _ApplyMixin:
         current_mode = states.get(e.ems_mode_select).state if states.get(e.ems_mode_select) else ""
         current_export = _state_float(states, e.grid_export_limit, 0)
         current_import = _state_float(states, e.grid_import_limit, 0)
-        current_pv_cap = _state_float(states, e.pv_max_power_limit, t.pv_max_power_normal)
+        current_pv_cap = _state_float(states, e.pv_max_power_limit, 0.0)
 
         LOG.debug(
             "_apply: current[mode=%r export=%.2f import=%.2f pv=%.2f] "
@@ -129,8 +129,7 @@ class _ApplyMixin:
 
         sun_state = states.get(e.sun_entity).state if states.get(e.sun_entity) else "unknown"
         pv_delta = abs(d.desired_pv_max_power_limit - current_pv_cap)
-        allow_night_pv_cap = d.desired_pv_max_power_limit <= (t.off_setpoint_kw + 0.05)
-        should_set_pv_cap = pv_delta >= 0.1 and (sun_state != "below_horizon" or allow_night_pv_cap)
+        should_set_pv_cap = pv_delta >= 0.1 and sun_state != "below_horizon"
         if should_set_pv_cap:
             pv_cap_setpoint = _bounded_number_value(states, e.pv_max_power_limit, d.desired_pv_max_power_limit)
             actions_triggered.append(f"set_pv_max:{pv_cap_setpoint}")

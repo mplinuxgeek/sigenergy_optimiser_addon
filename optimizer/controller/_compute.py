@@ -847,19 +847,6 @@ class _ComputeMixin:
         )
 
         desired_pv_cap = t.pv_max_power_normal
-        # Apply a night-idle PV cap only when exports are genuinely market-blocked
-        # (price below threshold) — not when a profile like no_exports has
-        # artificially raised thresholds to 99c to prevent any grid export.
-        # In the latter case PV must stay at max so solar always serves the home.
-        _exports_policy_blocked = t.export_threshold_low >= 1.0
-        if (
-            not _exports_policy_blocked
-            and desired_mode == "Maximum Self Consumption"
-            and desired_export == 0
-            and desired_import == 0
-            and (not is_sun_up)
-        ):
-            desired_pv_cap = max(0.1, min(t.pv_max_power_normal, t.off_setpoint_kw))
 
         reason = f"{export_reason}; {import_reason}; cover {hours_to_pv_cover_load:.1f}h"
 
